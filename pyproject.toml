@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "seliseblocks-genesis"
+version = "0.1.0"
+description = "Reusable FastAPI utilities like middlewares, singletons, and more."
+authors = [{name="Selise Blocks", email="mostafizur.rahman@selisegroup.com"}]
+dependencies = [
+    "fastapi",
+    "azure-identity",
+    "azure-keyvault-secrets",
+    "redis"
+]
+
+[tool.setuptools.packages.find]
+where = ["blocks_genesis"]
