@@ -1,18 +1,28 @@
-[build-system]
-requires = ["setuptools>=42", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "seliseblocks-genesis"
 version = "0.1.0"
 description = "Reusable FastAPI utilities like middlewares, singletons, and more."
 authors = [{name="Selise Blocks", email="mostafizur.rahman@selisegroup.com"}]
 dependencies = [
-    "fastapi",
-    "azure-identity",
-    "azure-keyvault-secrets",
-    "redis"
+    "fastapi>=0.68.0",
+    "uvicorn>=0.15.0",
+    "python-dotenv>=0.19.0",
+    "azure-identity>=1.7.0",
+    "azure-keyvault-secrets>=4.3.0",
+    "redis>=4.0.0",
+    "motor>=2.5.0",
+    "structlog>=21.1.0"
 ]
 
-[tool.setuptools.packages.find]
-where = ["blocks_genesis"]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["blocks_genesis"]
+
+[tool.uv.workspace]
+members = [
+    "testapp",
+]
+

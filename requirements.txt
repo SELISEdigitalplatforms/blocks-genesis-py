@@ -1,8 +1,0 @@
-fastapi
-uvicorn
-python-dotenv
-azure-identity
-azure-keyvault-secrets
-redis
-motor 
-structlog
