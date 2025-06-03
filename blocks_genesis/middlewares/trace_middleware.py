@@ -1,10 +1,18 @@
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-import uuid
+from fastapi import Request
 
-class TraceMiddleware(BaseHTTPMiddleware):
+from blocks_genesis.auth.blocks_context import BlocksContextManager
+from blocks_genesis.lmt.activity import Activity
+
+
+class TraceContextMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        request.state.trace_id = str(uuid.uuid4())
+
+        Activity.set_current_property("Request.Url", str(request.url.path))
+        Activity.set_current_property("Request.Method", request.method)
+
         response = await call_next(request)
-        response.headers["X-Trace-Id"] = request.state.trace_id
+
+        Activity.set_current_property("Response.StatusCode", response.status_code)
+
+        BlocksContextManager.clear_context()
         return response

@@ -1,3 +1,4 @@
+from typing import Optional
 from pydantic import BaseModel
 
 
@@ -13,12 +14,3 @@ class BlocksSecret(BaseModel):
     ServiceName: str = ""
     DatabaseConnectionString: str = ""
     RootDatabaseName: str = ""
-    EnableHsts: bool = False
-    SshHost: str = ""
-    SshUsername: str = ""
-    SshPassword: str = ""
-    SshNginxTemplate: str = ""
-
-
-
-blocks_secret_instance: BlocksSecret | None = None

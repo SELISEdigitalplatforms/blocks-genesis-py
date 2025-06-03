@@ -51,4 +51,3 @@ Thumbs.db
 # Environment variables (if you have a .env file outside of your venv)
 .env
 
-uv.lock

@@ -11,7 +11,13 @@ dependencies = [
     "azure-keyvault-secrets>=4.3.0",
     "redis>=4.0.0",
     "motor>=2.5.0",
-    "structlog>=21.1.0"
+    "structlog>=21.1.0",
+    "pydantic>=2.11.5",
+    "pymongo>=4.13.0",
+    "opentelemetry-api>=1.33.1",
+    "opentelemetry-sdk>=1.33.1",
+    "opentelemetry-instrumentation-fastapi>=0.54b1",
+    "opentelemetry-instrumentation-redis>=0.54b1",
 ]
 
 [build-system]
@@ -20,9 +26,4 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["blocks_genesis"]
-
-[tool.uv.workspace]
-members = [
-    "testapp",
-]
 

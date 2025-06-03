@@ -1,18 +1,18 @@
 from azure.identity import ClientSecretCredential
 from azure.keyvault.secrets import SecretClient
 from typing import List, Dict
-from env_vault_config import EnvVaultConfig
+from blocks_genesis.core.env_vault_config import EnvVaultConfig
 
 
 class AzureKeyVault:
     def __init__(self):
-        required_keys = ["KEY_VAULT_URL", "TENANT_ID", "CLIENT_ID", "CLIENT_SECRET"]
+        required_keys = ["KEYVAULT__CLIENTID", "KEYVAULT__CLIENTSECRET", "KEYVAULT__KEYVAULTURL", "KEYVAULT__TENANTID"]
         config = EnvVaultConfig.get_config(required_keys)
 
-        self.vault_url = config["KEY_VAULT_URL"]
-        tenant_id = config["TENANT_ID"]
-        client_id = config["CLIENT_ID"]
-        client_secret = config["CLIENT_SECRET"]
+        self.vault_url = config["KEYVAULT__KEYVAULTURL"]
+        tenant_id = config["KEYVAULT__TENANTID"]
+        client_id = config["KEYVAULT__CLIENTID"]
+        client_secret = config["KEYVAULT__CLIENTSECRET"]
 
         credential = ClientSecretCredential(tenant_id, client_id, client_secret)
         self.secret_client = SecretClient(vault_url=self.vault_url, credential=credential)
