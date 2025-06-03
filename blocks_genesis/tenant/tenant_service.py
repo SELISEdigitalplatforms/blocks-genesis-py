@@ -2,7 +2,6 @@
 import asyncio
 from typing import Dict, Optional, Tuple
 from pymongo import MongoClient
-from pymongo.database import Database
 
 from blocks_genesis.cache import CacheClient
 from blocks_genesis.cache.cache_provider import CacheProvider

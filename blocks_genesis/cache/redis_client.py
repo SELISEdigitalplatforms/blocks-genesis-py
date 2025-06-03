@@ -1,5 +1,4 @@
 import asyncio
-import logging
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Callable, Any
 import redis
@@ -7,7 +6,7 @@ import redis.asyncio as aioredis
 from opentelemetry.trace import StatusCode
 
 from blocks_genesis.cache import CacheClient
-from blocks_genesis.core import blocks_secret
+from blocks_genesis.core.blocks_secret import blocks_secret_instance
 from blocks_genesis.lmt.activity import Activity
 
 
@@ -16,49 +15,20 @@ class RedisClient(CacheClient):
     
     def __init__(self):
         """Initialize Redis client"""
-        self._connection_string = blocks_secret.cache_connection_string
+        self._connection_string = blocks_secret_instance.cache_connection_string
         self._subscriptions: Dict[str, Callable] = {}
         self._disposed = False
         self._pubsub_tasks: Dict[str, asyncio.Task] = {}
         
         # Parse connection string and initialize clients
-        self._redis_config = self._parse_connection_string(blocks_secret.cache_connection_string)
+        self._redis_config = self._parse_connection_string(blocks_secret_instance.cache_connection_string)
         self._sync_client = redis.Redis(**self._redis_config)
         self._async_client: Optional[aioredis.Redis] = None
-        
-        # Logger
-        self._logger = logging.getLogger(__name__)
     
     def _parse_connection_string(self, connection_string: str) -> Dict[str, Any]:
         """Parse Redis connection string"""
-        if connection_string.startswith('redis://'):
-            return redis.connection.parse_url(connection_string)
-        else:
-            # Handle custom format: host=localhost,port=6379,db=0,password=secret
-            config = {
-                'host': 'localhost',
-                'port': 6379,
-                'db': 0,
-                'decode_responses': True
-            }
+        return redis.connection.parse_url(connection_string)
             
-            parts = connection_string.split(',')
-            for part in parts:
-                if '=' in part:
-                    key, value = part.split('=', 1)
-                    key = key.strip().lower()
-                    value = value.strip()
-                    
-                    if key == 'host':
-                        config['host'] = value
-                    elif key == 'port':
-                        config['port'] = int(value)
-                    elif key == 'db':
-                        config['db'] = int(value)
-                    elif key == 'password':
-                        config['password'] = value
-            
-            return config
     
     async def _get_async_client(self) -> aioredis.Redis:
         """Get or create async Redis client"""

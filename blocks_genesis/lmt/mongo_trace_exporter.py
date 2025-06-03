@@ -4,20 +4,18 @@ import threading
 from queue import Queue, Empty
 from pymongo import MongoClient
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
+from blocks_genesis.core.blocks_secret import blocks_secret_instance
 
 
 class MongoDBTraceExporter(SpanExporter):
     def __init__(
         self,
-        service_name: str,
-        mongo_uri: str,
-        database_name: str,
         flush_interval: float = 3.0,
         batch_size: int = 1000
     ):
-        self._service_name = service_name
-        self._client = MongoClient(mongo_uri)
-        self._db = self._client[database_name]
+        self._service_name = blocks_secret_instance.ServiceName
+        self._client = MongoClient(blocks_secret_instance.TraceConnectionString)
+        self._db = self._client[blocks_secret_instance.TraceDatabaseName]
         self._queue = Queue()
         self._batch_size = batch_size
         self._flush_interval = flush_interval

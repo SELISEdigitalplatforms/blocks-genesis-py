@@ -14,3 +14,6 @@ class BlocksSecret(BaseModel):
     ServiceName: str = ""
     DatabaseConnectionString: str = ""
     RootDatabaseName: str = ""
+
+
+blocks_secret_instance: Optional[BlocksSecret] = None

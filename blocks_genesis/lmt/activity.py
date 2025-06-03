@@ -65,13 +65,6 @@ class Activity:
         """Get a baggage item by key."""
         return baggage.get_baggage(key, context=get_current())
 
-    def get_all_baggage(self):
-        """Return all baggage items as a dict."""
-        # OpenTelemetry Python doesn't provide direct API to get all baggage keys,
-        # but we can implement if needed by iterating context
-        # For now, return empty or None
-        return None
-
     def stop(self):
         """End the span and detach the context token."""
         self._span.end()

@@ -1,6 +1,6 @@
 from contextvars import ContextVar
 from datetime import datetime
-from typing import List, Optional, Dict, Any, TypeVar
+from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 import threading
 
@@ -46,7 +46,6 @@ class BlocksContext(BaseModel):
 
 # Context variables for async context management
 _context_var: ContextVar[Optional[BlocksContext]] = ContextVar('blocks_context', default=None)
-_force_context_var: ContextVar[bool] = ContextVar('force_context', default=False)
 _test_mode = threading.local()
 
 class BlocksContextManager:
@@ -142,9 +141,6 @@ class BlocksContextManager:
             if BlocksContextManager.get_test_mode():
                 return test_value or _context_var.get()
             
-            if _force_context_var.get() and _context_var.get() is not None:
-                return _context_var.get()
-            
             return _context_var.get()
         except Exception:
             return None
@@ -153,13 +149,11 @@ class BlocksContextManager:
     def set_context(context: Optional[BlocksContext], change_context: bool = True) -> None:
         """Set the context in ContextVar storage"""
         _context_var.set(context)
-        _force_context_var.set(context is not None and change_context)
     
     @staticmethod
     def clear_context() -> None:
         """Clear the current context"""
         _context_var.set(None)
-        _force_context_var.set(False)
     
     
 

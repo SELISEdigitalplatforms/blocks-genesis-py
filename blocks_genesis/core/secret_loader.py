@@ -1,17 +1,19 @@
 from typing import Dict, Any, Optional
 import logging
-from blocks_genesis.core.blocks_secret import BlocksSecret
+from blocks_genesis.core.blocks_secret import BlocksSecret, blocks_secret_instance
 from blocks_genesis.core.azure_key_vault import AzureKeyVault
 
 # Set up logging
 logger = logging.getLogger(__name__)
 
 class SecretLoader:
-    def __init__(self):
+    def __init__(self, sevice_name: str = "blocks_service"):
+        """Initialize the SecretLoader with a service name"""
         self.vault = AzureKeyVault()
         self._secrets = None
+        self.service_name = sevice_name
     
-    async def load_secrets(self) -> BlocksSecret:
+    async def load_secrets(self):
         """Load secrets from Azure Key Vault"""
         try:
             logger.info("Loading secrets from Azure Key Vault...")
@@ -36,10 +38,10 @@ class SecretLoader:
             # Set global instance
             global blocks_secret_instance
             blocks_secret_instance = secret
+            blocks_secret_instance.ServiceName = self.service_name
             
             self._secrets = secret
             logger.info("✅ Secrets loaded successfully")
-            return secret
             
         except Exception as e:
             logger.error(f"❌ Failed to load secrets: {e}")
@@ -56,5 +58,3 @@ class SecretLoader:
         """Check if secrets are loaded"""
         return self._secrets is not None
 
-# Global instance
-blocks_secret_instance: Optional[BlocksSecret] = None

@@ -5,25 +5,23 @@ from queue import Queue, Empty
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from opentelemetry.trace import get_current_span
 
-# === Mongo Config ===
-MONGO_URI = "mongodb://localhost:27017"
-DB_NAME = "Logs"
-COLLECTION_NAME = "Logs"
+from blocks_genesis.core.blocks_secret import blocks_secret_instance
 
-mongo_client = MongoClient(MONGO_URI)
-db = mongo_client[DB_NAME]
+
+mongo_client = MongoClient(blocks_secret_instance.LogConnectionString)
+db = mongo_client[blocks_secret_instance.LogDatabaseName]
 
 def ensure_collection():
-    if COLLECTION_NAME not in db.list_collection_names():
+    if blocks_secret_instance.ServiceName not in db.list_collection_names():
         db.create_collection(
-            COLLECTION_NAME,
+            blocks_secret_instance.ServiceName,
             timeseries={
                 "timeField": "Timestamp",
                 "metaField": "TenantId",
                 "granularity": "minutes"
             }
         )
-        db[COLLECTION_NAME].create_index(
+        db[blocks_secret_instance.ServiceName].create_index(
             [("TenantId", ASCENDING), ("Timestamp", DESCENDING)],
             name="Tenant_Timestamp_Index"
         )
@@ -43,7 +41,7 @@ class MongoBatchLogger:
     def __init__(self, batch_size=50, flush_interval_sec=2.0):
         self.batch_size = batch_size
         self.flush_interval_sec = flush_interval_sec
-        self.collection = db[COLLECTION_NAME]
+        self.collection = db[blocks_secret_instance.ServiceName]
         self.queue = Queue()
         self._stop_event = threading.Event()
         self.worker_thread = threading.Thread(target=self._background_worker, daemon=True)
