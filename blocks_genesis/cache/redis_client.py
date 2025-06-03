@@ -1,19 +1,22 @@
-# clients/redis_client.py
 import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Callable, Any
 import redis
 import redis.asyncio as aioredis
+from opentelemetry.trace import StatusCode
+
+from blocks_genesis.cache import CacheClient
+from blocks_genesis.core import blocks_secret
+from blocks_genesis.lmt.activity import Activity
 
 
 class RedisClient(CacheClient):
-    """Redis client implementation"""
+    """Redis client implementation with Activity tracing"""
     
     def __init__(self):
         """Initialize Redis client"""
         self._connection_string = blocks_secret.cache_connection_string
-        self._activity_source = activity_source
         self._subscriptions: Dict[str, Callable] = {}
         self._disposed = False
         self._pubsub_tasks: Dict[str, asyncio.Task] = {}
@@ -67,169 +70,219 @@ class RedisClient(CacheClient):
         """Get the Redis database instance"""
         return self._sync_client
     
-    def _set_activity(self, key: str, operation: str) -> ActivityContext:
-        """Set activity for tracing"""
-        context = BlocksContext.get_context()
-        activity = self._activity_source.start_activity(f"Redis::{operation}", "Producer")
-        
-        if context and context.tenant_id:
-            activity.set_custom_property("TenantId", context.tenant_id)
-        activity.set_tag("Key", key)
-        
+    def _create_activity(self, key: str, operation: str) -> Activity:
+        """Create activity for tracing"""
+        activity = Activity.start(f"Redis::{operation}")
+        activity.set_property("key", key)
+        activity.set_property("operation", operation)
         return activity
     
     # Synchronous Methods
     def key_exists(self, key: str) -> bool:
         """Check if key exists"""
-        with self._set_activity(key, "KeyExists") as activity:
+        with self._create_activity(key, "KeyExists") as activity:
             try:
                 result = self._sync_client.exists(key) > 0
+                activity.set_property("exists", result)
                 return result
             except Exception as ex:
-                activity.set_tag("error", True)
-                activity.set_tag("errorMessage", str(ex))
+                activity.set_property("error", True)
+                activity.set_property("error_message", str(ex))
+                activity.set_status(StatusCode.ERROR, str(ex))
                 raise
     
     def add_string_value(self, key: str, value: str, key_life_span: Optional[int] = None) -> bool:
         """Add string value to cache"""
-        with self._set_activity(key, "AddStringValue") as activity:
+        with self._create_activity(key, "AddStringValue") as activity:
             try:
+                activity.set_property("value_length", len(value))
                 if key_life_span is not None:
+                    activity.set_property("ttl", key_life_span)
                     result = self._sync_client.setex(key, key_life_span, value)
                 else:
                     result = self._sync_client.set(key, value)
-                return bool(result)
+                
+                success = bool(result)
+                activity.set_property("success", success)
+                return success
             except Exception as ex:
-                activity.set_tag("error", True)
-                activity.set_tag("errorMessage", str(ex))
+                activity.set_property("error", True)
+                activity.set_property("error_message", str(ex))
+                activity.set_status(StatusCode.ERROR, str(ex))
                 raise
     
     def get_string_value(self, key: str) -> Optional[str]:
         """Get string value from cache"""
-        with self._set_activity(key, "GetStringValue") as activity:
+        with self._create_activity(key, "GetStringValue") as activity:
             try:
                 result = self._sync_client.get(key)
+                activity.set_property("found", result is not None)
+                if result:
+                    activity.set_property("value_length", len(result))
                 return result
             except Exception as ex:
-                activity.set_tag("error", True)
-                activity.set_tag("errorMessage", str(ex))
+                activity.set_property("error", True)
+                activity.set_property("error_message", str(ex))
+                activity.set_status(StatusCode.ERROR, str(ex))
                 raise
     
     def remove_key(self, key: str) -> bool:
         """Remove key from cache"""
-        with self._set_activity(key, "RemoveKey") as activity:
+        with self._create_activity(key, "RemoveKey") as activity:
             try:
                 result = self._sync_client.delete(key) > 0
+                activity.set_property("deleted", result)
                 return result
             except Exception as ex:
-                activity.set_tag("error", True)
-                activity.set_tag("errorMessage", str(ex))
+                activity.set_property("error", True)
+                activity.set_property("error_message", str(ex))
+                activity.set_status(StatusCode.ERROR, str(ex))
                 raise
     
     def add_hash_value(self, key: str, value: Dict[str, Any], key_life_span: Optional[int] = None) -> bool:
         """Add hash value to cache"""
-        with self._set_activity(key, "AddHashValue") as activity:
+        with self._create_activity(key, "AddHashValue") as activity:
             try:
+                activity.set_property("field_count", len(value))
+                if key_life_span is not None:
+                    activity.set_property("ttl", key_life_span)
+                
                 self._sync_client.hset(key, mapping=value)
                 if key_life_span is not None:
                     expire_time = datetime.utcnow() + timedelta(seconds=key_life_span)
                     result = self._sync_client.expireat(key, expire_time)
-                    return bool(result)
-                return True
+                    success = bool(result)
+                else:
+                    success = True
+                
+                activity.set_property("success", success)
+                return success
             except Exception as ex:
-                activity.set_tag("error", True)
-                activity.set_tag("errorMessage", str(ex))
+                activity.set_property("error", True)
+                activity.set_property("error_message", str(ex))
+                activity.set_status(StatusCode.ERROR, str(ex))
                 raise
     
     def get_hash_value(self, key: str) -> Dict[str, Any]:
         """Get hash value from cache"""
-        with self._set_activity(key, "GetHashValue") as activity:
+        with self._create_activity(key, "GetHashValue") as activity:
             try:
                 result = self._sync_client.hgetall(key)
-                return dict(result) if result else {}
+                hash_dict = dict(result) if result else {}
+                activity.set_property("found", bool(result))
+                activity.set_property("field_count", len(hash_dict))
+                return hash_dict
             except Exception as ex:
-                activity.set_tag("error", True)
-                activity.set_tag("errorMessage", str(ex))
+                activity.set_property("error", True)
+                activity.set_property("error_message", str(ex))
+                activity.set_status(StatusCode.ERROR, str(ex))
                 raise
     
     # Asynchronous Methods
     async def key_exists_async(self, key: str) -> bool:
         """Check if key exists (async)"""
         client = await self._get_async_client()
-        with self._set_activity(key, "KeyExists") as activity:
+        with self._create_activity(key, "KeyExists") as activity:
             try:
                 result = await client.exists(key) > 0
+                activity.set_property("exists", result)
                 return result
             except Exception as ex:
-                activity.set_tag("error", True)
-                activity.set_tag("errorMessage", str(ex))
+                activity.set_property("error", True)
+                activity.set_property("error_message", str(ex))
+                activity.set_status(StatusCode.ERROR, str(ex))
                 raise
     
     async def add_string_value_async(self, key: str, value: str, key_life_span: Optional[int] = None) -> bool:
         """Add string value to cache (async)"""
         client = await self._get_async_client()
-        with self._set_activity(key, "AddStringValue") as activity:
+        with self._create_activity(key, "AddStringValue") as activity:
             try:
+                activity.set_property("value_length", len(value))
                 if key_life_span is not None:
+                    activity.set_property("ttl", key_life_span)
                     result = await client.setex(key, key_life_span, value)
                 else:
                     result = await client.set(key, value)
-                return bool(result)
+                
+                success = bool(result)
+                activity.set_property("success", success)
+                return success
             except Exception as ex:
-                activity.set_tag("error", True)
-                activity.set_tag("errorMessage", str(ex))
+                activity.set_property("error", True)
+                activity.set_property("error_message", str(ex))
+                activity.set_status(StatusCode.ERROR, str(ex))
                 raise
     
     async def get_string_value_async(self, key: str) -> Optional[str]:
         """Get string value from cache (async)"""
         client = await self._get_async_client()
-        with self._set_activity(key, "GetStringValue") as activity:
+        with self._create_activity(key, "GetStringValue") as activity:
             try:
                 result = await client.get(key)
+                activity.set_property("found", result is not None)
+                if result:
+                    activity.set_property("value_length", len(result))
                 return result
             except Exception as ex:
-                activity.set_tag("error", True)
-                activity.set_tag("errorMessage", str(ex))
+                activity.set_property("error", True)
+                activity.set_property("error_message", str(ex))
+                activity.set_status(StatusCode.ERROR, str(ex))
                 raise
     
     async def remove_key_async(self, key: str) -> bool:
         """Remove key from cache (async)"""
         client = await self._get_async_client()
-        with self._set_activity(key, "RemoveKey") as activity:
+        with self._create_activity(key, "RemoveKey") as activity:
             try:
                 result = await client.delete(key) > 0
+                activity.set_property("deleted", result)
                 return result
             except Exception as ex:
-                activity.set_tag("error", True)
-                activity.set_tag("errorMessage", str(ex))
+                activity.set_property("error", True)
+                activity.set_property("error_message", str(ex))
+                activity.set_status(StatusCode.ERROR, str(ex))
                 raise
     
     async def add_hash_value_async(self, key: str, value: Dict[str, Any], key_life_span: Optional[int] = None) -> bool:
         """Add hash value to cache (async)"""
         client = await self._get_async_client()
-        with self._set_activity(key, "AddHashValue") as activity:
+        with self._create_activity(key, "AddHashValue") as activity:
             try:
+                activity.set_property("field_count", len(value))
+                if key_life_span is not None:
+                    activity.set_property("ttl", key_life_span)
+                
                 await client.hset(key, mapping=value)
                 if key_life_span is not None:
                     expire_time = datetime.utcnow() + timedelta(seconds=key_life_span)
                     result = await client.expireat(key, expire_time)
-                    return bool(result)
-                return True
+                    success = bool(result)
+                else:
+                    success = True
+                
+                activity.set_property("success", success)
+                return success
             except Exception as ex:
-                activity.set_tag("error", True)
-                activity.set_tag("errorMessage", str(ex))
+                activity.set_property("error", True)
+                activity.set_property("error_message", str(ex))
+                activity.set_status(StatusCode.ERROR, str(ex))
                 raise
     
     async def get_hash_value_async(self, key: str) -> Dict[str, Any]:
         """Get hash value from cache (async)"""
         client = await self._get_async_client()
-        with self._set_activity(key, "GetHashValue") as activity:
+        with self._create_activity(key, "GetHashValue") as activity:
             try:
                 result = await client.hgetall(key)
-                return dict(result) if result else {}
+                hash_dict = dict(result) if result else {}
+                activity.set_property("found", bool(result))
+                activity.set_property("field_count", len(hash_dict))
+                return hash_dict
             except Exception as ex:
-                activity.set_tag("error", True)
-                activity.set_tag("errorMessage", str(ex))
+                activity.set_property("error", True)
+                activity.set_property("error_message", str(ex))
+                activity.set_status(StatusCode.ERROR, str(ex))
                 raise
     
     # Pub/Sub Methods
@@ -239,13 +292,16 @@ class RedisClient(CacheClient):
             raise ValueError("Channel cannot be empty")
         
         client = await self._get_async_client()
-        with self._set_activity(channel, "Publish") as activity:
+        with self._create_activity(channel, "Publish") as activity:
             try:
+                activity.set_property("message_length", len(message))
                 result = await client.publish(channel, message)
+                activity.set_property("subscribers_notified", result)
                 return result
             except Exception as ex:
-                activity.set_tag("error", True)
-                activity.set_tag("errorMessage", str(ex))
+                activity.set_property("error", True)
+                activity.set_property("error_message", str(ex))
+                activity.set_status(StatusCode.ERROR, str(ex))
                 raise
     
     async def subscribe_async(self, channel: str, handler: Callable[[str, str], None]) -> None:
@@ -256,7 +312,7 @@ class RedisClient(CacheClient):
             raise ValueError("Handler cannot be None")
         
         client = await self._get_async_client()
-        with self._set_activity(channel, "Subscribe") as activity:
+        with self._create_activity(channel, "Subscribe") as activity:
             try:
                 # Store the handler
                 self._subscriptions[channel] = handler
@@ -269,9 +325,12 @@ class RedisClient(CacheClient):
                 task = asyncio.create_task(self._handle_subscription(pubsub, channel, handler))
                 self._pubsub_tasks[channel] = task
                 
+                activity.set_property("subscribed", True)
+                
             except Exception as ex:
-                activity.set_tag("error", True)
-                activity.set_tag("errorMessage", str(ex))
+                activity.set_property("error", True)
+                activity.set_property("error_message", str(ex))
+                activity.set_status(StatusCode.ERROR, str(ex))
                 self._subscriptions.pop(channel, None)
                 raise
     
@@ -280,7 +339,7 @@ class RedisClient(CacheClient):
         if not channel:
             raise ValueError("Channel cannot be empty")
         
-        with self._set_activity(channel, "Unsubscribe") as activity:
+        with self._create_activity(channel, "Unsubscribe") as activity:
             try:
                 # Cancel the subscription task
                 if channel in self._pubsub_tasks:
@@ -293,10 +352,12 @@ class RedisClient(CacheClient):
                 
                 # Remove from subscriptions
                 self._subscriptions.pop(channel, None)
+                activity.set_property("unsubscribed", True)
                 
             except Exception as ex:
-                activity.set_tag("error", True)
-                activity.set_tag("errorMessage", str(ex))
+                activity.set_property("error", True)
+                activity.set_property("error_message", str(ex))
+                activity.set_status(StatusCode.ERROR, str(ex))
                 raise
     
     async def _handle_subscription(self, pubsub: aioredis.client.PubSub, channel: str, handler: Callable[[str, str], None]):
@@ -304,8 +365,8 @@ class RedisClient(CacheClient):
         try:
             async for message in pubsub.listen():
                 if message['type'] == 'message':
-                    with self._activity_source.start_activity("Redis::MessageReceived", "Consumer") as message_activity:
-                        message_activity.set_tag("Channel", channel)
+                    with Activity.start("Redis::MessageReceived") as message_activity:
+                        message_activity.set_property("channel", channel)
                         try:
                             channel_name = message['channel']
                             if isinstance(channel_name, bytes):
@@ -315,10 +376,14 @@ class RedisClient(CacheClient):
                             if isinstance(message_data, bytes):
                                 message_data = message_data.decode('utf-8')
                             
+                            message_activity.set_property("message_length", len(message_data))
                             handler(channel_name, message_data)
+                            message_activity.set_property("handled", True)
+                            
                         except Exception as ex:
-                            message_activity.set_tag("error", True)
-                            message_activity.set_tag("errorMessage", str(ex))
+                            message_activity.set_property("error", True)
+                            message_activity.set_property("error_message", str(ex))
+                            message_activity.set_status(StatusCode.ERROR, str(ex))
                             self._logger.error(f"Error handling message in channel {channel}: {ex}")
         except asyncio.CancelledError:
             # Expected when unsubscribing

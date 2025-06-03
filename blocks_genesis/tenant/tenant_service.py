@@ -1,22 +1,24 @@
 # services/tenant_service.py
 import asyncio
-import logging
 from typing import Dict, Optional, Tuple
 from pymongo import MongoClient
 from pymongo.database import Database
 
-from interfaces.cache_client import ICacheClient
-from entities.tenant import Tenant
+from blocks_genesis.cache import CacheClient
+from blocks_genesis.cache.cache_provider import CacheProvider
+from blocks_genesis.core import blocks_secret
+from blocks_genesis.tenant.tenant import Tenant
 
 
 class TenantService:
     """Manages tenant configuration with caching and real-time updates"""
     
-    def __init__(self, cache_client: ICacheClient, db_connection_string: str, root_db_name: str):
-        self.cache = cache_client
-        self.client = MongoClient(db_connection_string)
-        self.database = self.client[root_db_name]
-        self.logger = logging.getLogger(__name__)
+    def __init__(self):
+        self.cache: CacheClient = CacheProvider.get_cache_client()
+        if not self.cache:
+            raise RuntimeError("Cache client not initialized")
+        self.client = MongoClient(blocks_secret.db_connection_string)
+        self.database = self.client[blocks_secret.root_db_name]
         
         # In-memory cache
         self._tenant_cache: Dict[str, Tenant] = {}
@@ -153,8 +155,8 @@ def get_tenant_service() -> TenantService:
         raise RuntimeError("Tenant service not initialized")
     return _tenant_service
 
-def initialize_tenant_service(cache_client: ICacheClient, db_connection: str, root_db: str) -> TenantService:
+def initialize_tenant_service() -> TenantService:
     """Initialize global tenant service"""
     global _tenant_service
-    _tenant_service = TenantService(cache_client, db_connection, root_db)
+    _tenant_service = TenantService()
     return _tenant_service
