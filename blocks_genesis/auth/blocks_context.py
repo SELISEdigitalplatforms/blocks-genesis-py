@@ -1,30 +1,30 @@
 from contextvars import ContextVar
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import ClassVar, List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 import threading
 
 class BlocksContext(BaseModel):
-    # JWT Standard Claims
-    ISSUER_CLAIM = "iss"
-    AUDIENCES_CLAIM = "aud"
-    ISSUED_AT_TIME_CLAIM = "iat"
-    NOT_BEFORE_THAT_CLAIM = "nbf"
-    EXPIRE_ON_CLAIM = "exp"
-    SUBJECT_CLAIM = "sub"
+   # JWT Standard Claims
+    ISSUER_CLAIM: ClassVar[str] = "iss"
+    AUDIENCES_CLAIM: ClassVar[str] = "aud"
+    ISSUED_AT_TIME_CLAIM: ClassVar[str] = "iat"
+    NOT_BEFORE_THAT_CLAIM: ClassVar[str] = "nbf"
+    EXPIRE_ON_CLAIM: ClassVar[str] = "exp"
+    SUBJECT_CLAIM: ClassVar[str] = "sub"
     
     # Custom Claims
-    TENANT_ID_CLAIM = "tenant_id"
-    ROLES_CLAIM = "roles"
-    USER_ID_CLAIM = "user_id"
-    REQUEST_URI_CLAIM = "request_uri"
-    TOKEN_CLAIM = "oauth"
-    PERMISSION_CLAIM = "permissions"
-    ORGANIZATION_ID_CLAIM = "org_id"
-    EMAIL_CLAIM = "email"
-    USER_NAME_CLAIM = "user_name"
-    DISPLAY_NAME_CLAIM = "name"
-    PHONE_NUMBER_CLAIM = "phone"
+    TENANT_ID_CLAIM: ClassVar[str] = "tenant_id"
+    ROLES_CLAIM: ClassVar[str] = "roles"
+    USER_ID_CLAIM: ClassVar[str] = "user_id"
+    REQUEST_URI_CLAIM: ClassVar[str] = "request_uri"
+    TOKEN_CLAIM: ClassVar[str] = "oauth"
+    PERMISSION_CLAIM: ClassVar[str] = "permissions"
+    ORGANIZATION_ID_CLAIM: ClassVar[str] = "org_id"
+    EMAIL_CLAIM: ClassVar[str] = "email"
+    USER_NAME_CLAIM: ClassVar[str] = "user_name"
+    DISPLAY_NAME_CLAIM: ClassVar[str] = "name"
+    PHONE_NUMBER_CLAIM: ClassVar[str] = "phone"
     
     # Properties
     tenant_id: str = ""

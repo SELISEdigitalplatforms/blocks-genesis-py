@@ -1,7 +1,17 @@
 from contextlib import asynccontextmanager
+import logging
+from blocks_genesis.cache.cache_provider import CacheProvider
+from blocks_genesis.cache.redis_client import RedisClient
 from blocks_genesis.core.secret_loader import SecretLoader
 from fastapi import FastAPI
 import uvicorn
+
+from blocks_genesis.database.db_context import DbContext
+from blocks_genesis.database.mongo_context import MongoDbContextProvider
+from blocks_genesis.lmt.log_config import configure_logger
+from blocks_genesis.lmt.mongo_log_exporter import MongoHandler
+from blocks_genesis.lmt.tracing import enable_tracing
+from blocks_genesis.tenant.tenant_service import TenantService
 
 # Global variable to store secrets
 secrets_instance = None
@@ -14,7 +24,7 @@ async def lifespan(app: FastAPI):
     # Startup
     try:
         print("🚀 Starting up - Loading secrets...")
-        secret_loader = SecretLoader()
+        secret_loader = SecretLoader("blocks_ai_api")
         await secret_loader.load_secrets()
         secrets_instance = secret_loader
         print("✅ Secrets loaded successfully!")
@@ -31,23 +41,19 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# configure_logger()
+configure_logger()
+logger = logging.getLogger(__name__)
+logger.info("Logger started")
+MongoHandler._mongo_logger.stop()
 
-# logger = logging.getLogger(__name__)
+enable_tracing(app)
 
-# logger.info("Application started")
+TenantService.initialize()
+CacheProvider.set_client(RedisClient())
+DbContext.set_provider(MongoDbContextProvider())
+ 
 
-# # When app shuts down cleanly, optionally stop background thread
-# from log_persist import MongoHandler
 
-# MongoHandler._mongo_logger.stop()
-
-# enable_tracing(
-#     app,
-#     service_name="my-blocks-service",
-#     mongo_uri="mongodb://localhost:27017",
-#     db_name="traces"
-# )
 
 
 

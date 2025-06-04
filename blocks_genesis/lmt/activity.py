@@ -5,7 +5,7 @@ from opentelemetry.trace import (
     Status,
     StatusCode
 )
-from opentelemetry.context import get_current, attach, detach, set_value
+from opentelemetry.context import get_current, attach, detach
 
 
 _tracer = trace.get_tracer("blocks.activity")
@@ -13,9 +13,14 @@ _tracer = trace.get_tracer("blocks.activity")
 
 class Activity:
     def __init__(self, name: str):
+        # Capture current context for propagation (including baggage and current span)
         self._context = get_current()
+
+        # Start a new span with the current context (this will become a child if one exists)
         self._span = _tracer.start_span(name, context=self._context)
-        self._token = attach(trace.set_span_in_context(self._span))
+
+        # Make this span the current active span in the context
+        self._token = attach(trace.set_span_in_context(self._span, self._context))
 
     def set_property(self, key: str, value):
         """Set a single attribute/tag on the span."""
@@ -30,7 +35,8 @@ class Activity:
 
     def add_event(self, name: str, attributes: dict = None):
         """Add a single event to the span."""
-        self._span.add_event(name, attributes or {})
+        if self._span.is_recording():
+            self._span.add_event(name, attributes or {})
 
     def add_events(self, events: list[dict]):
         """
@@ -50,20 +56,17 @@ class Activity:
         self._span.set_status(Status(status_code, description))
 
     def set_baggage(self, key: str, value: str):
-        """Set a baggage item in the current context."""
-        ctx = baggage.set_baggage(key, value, context=get_current())
-        set_value("context", ctx)
+        """Set a baggage item in the current context and update internal context."""
+        self._context = baggage.set_baggage(key, value, context=self._context)
 
     def set_baggage_items(self, items: dict):
-        """Set multiple baggage items at once."""
-        ctx = get_current()
+        """Set multiple baggage items at once and update internal context."""
         for k, v in items.items():
-            ctx = baggage.set_baggage(k, v, context=ctx)
-        set_value("context", ctx)
+            self._context = baggage.set_baggage(k, v, context=self._context)
 
     def get_baggage(self, key: str):
-        """Get a baggage item by key."""
-        return baggage.get_baggage(key, context=get_current())
+        """Get a baggage item by key from this activity's context."""
+        return baggage.get_baggage(key, context=self._context)
 
     def stop(self):
         """End the span and detach the context token."""
@@ -74,6 +77,9 @@ class Activity:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None:
+            self._span.record_exception(exc_val)
+            self.set_status(StatusCode.ERROR, str(exc_val))
         self.stop()
 
     @staticmethod
@@ -89,6 +95,7 @@ class Activity:
 
     @staticmethod
     def start(name: str) -> "Activity":
+        """Start a new activity span (automatically attaches context)."""
         return Activity(name)
 
     @staticmethod

@@ -1,50 +1,56 @@
-# middlewares.py
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-import uuid
 from datetime import datetime
 from blocks_genesis.auth.blocks_context import BlocksContext, BlocksContextManager
 from blocks_genesis.lmt.activity import Activity
+from blocks_genesis.tenant.tenant import Tenant
+from blocks_genesis.tenant.tenant_service import get_tenant_service
 
 
 class TenantValidationMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         api_key = request.headers.get("x-blocks-key") or request.query_params.get("x-blocks-key")
-        tenant = None
+        tenant: Tenant = None
+        tenant_service = get_tenant_service()  # Assuming this function retrieves the tenant service instance
 
         if not api_key:
             domain = str(request.url.hostname)
-            tenant = get_tenant_by_domain(domain)
+            tenant = tenant_service.get_tenant_by_domain(domain)
             if not tenant:
                 return self._reject(404, "Not_Found: Application_Not_Found")
         else:
-            tenant = get_tenant_by_id(api_key)
+            tenant = tenant_service.get_tenant(api_key)
 
-        if not tenant or tenant.get("is_disabled"):
+        if not tenant or tenant.is_disabled:
             return self._reject(404, "Not_Found: Application_Not_Found")
 
         if not self._is_valid_origin_or_referer(request, tenant):
             return self._reject(406, "NotAcceptable: Invalid_Origin_Or_Referer")
 
-        Activity.set_current_property("Tenant.Id", tenant["tenant_id"])
-        ctx = BlocksContext(
+        # Set baggage for propagation across service calls
+        Activity.set_baggage("tenant_id", tenant["tenant_id"])
+
+        # Construct and set BlocksContext
+        ctx = BlocksContextManager.create(
             tenant_id=tenant["tenant_id"],
             roles=[],
-            subject="",
-            is_service=False,
-            application_domain=tenant["application_domain"],
-            username="",
-            expires_at=datetime.now(),
-            correlation_id=str(uuid.uuid4()),
+            user_id="",
+            is_authenticated=False,
+            request_uri=request.url.to_string(),
+            organization_id="",
+            expire_on=datetime.now(),
+            email="",
             permissions=[],
-            request_id=str(uuid.uuid4()),
-            user_agent=request.headers.get("User-Agent", ""),
-            ip_address=request.client.host if request.client else "",
-            device_id=""
+            user_name="",
+            phone_number="",
+            display_name="",
+            oauth_token=""
         )
         BlocksContextManager.set_context(ctx)
+
+        # Set span-level attributes
         Activity.set_current_property("SecurityContext", str(ctx.__dict__))
 
         return await call_next(request)

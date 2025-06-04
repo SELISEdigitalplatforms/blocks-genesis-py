@@ -1,4 +1,3 @@
-# services/tenant_service.py
 import asyncio
 from typing import Dict, Optional, Tuple
 from pymongo import MongoClient
@@ -74,22 +73,6 @@ class TenantService:
             return tenant.db_name, tenant.db_connection_string
         return None, None
     
-    async def invalidate_cache(self):
-        """Invalidate tenant cache and notify other instances"""
-        try:
-            # Generate new version
-            version = str(hash(f"{len(self._tenant_cache)}-{asyncio.get_event_loop().time()}"))
-            
-            # Update Redis
-            await self.cache.add_string_value_async(self._version_key, version)
-            
-            # Publish update
-            await self.cache.publish_async(self._update_channel, version)
-            
-            self.logger.info(f"Cache invalidated with version: {version}")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to invalidate cache: {e}")
     
     def _load_tenants(self):
         """Load all tenants into cache"""

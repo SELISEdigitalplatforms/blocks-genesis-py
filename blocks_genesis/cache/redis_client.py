@@ -5,7 +5,7 @@ import redis
 import redis.asyncio as aioredis
 from opentelemetry.trace import StatusCode
 
-from blocks_genesis.cache import CacheClient
+from blocks_genesis.cache.CacheClient import CacheClient
 from blocks_genesis.core.blocks_secret import blocks_secret_instance
 from blocks_genesis.lmt.activity import Activity
 
