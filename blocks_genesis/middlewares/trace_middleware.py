@@ -1,6 +1,7 @@
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
+from opentelemetry.trace import StatusCode
 from blocks_genesis.auth.blocks_context import BlocksContextManager
 from blocks_genesis.lmt.activity import Activity
 
@@ -24,7 +25,7 @@ class TraceContextMiddleware(BaseHTTPMiddleware):
             try:
                 response = await call_next(request)
             except Exception as e:
-                activity.set_status(Activity.StatusCode.ERROR, str(e))
+                activity.set_status(StatusCode.ERROR, str(e))
                 activity.add_event("exception", {
                     "exception.type": type(e).__name__,
                     "exception.message": str(e),

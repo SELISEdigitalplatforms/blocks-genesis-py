@@ -97,6 +97,7 @@ class TraceContextFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         """Add trace context to log records."""
         record.TenantId = Activity.get_baggage_item("TenantId") or "miscellaneous"
+        print(f"[TraceContextFilter] TenantId: {record.TenantId}")
         record.TraceId = Activity.get_trace_id()
         record.SpanId = Activity.get_span_id()
         return True

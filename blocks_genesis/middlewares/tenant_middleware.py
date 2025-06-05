@@ -30,15 +30,15 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
             return self._reject(406, "NotAcceptable: Invalid_Origin_Or_Referer")
 
         # Set baggage for propagation across service calls
-        Activity.set_baggage_item("TenantId", tenant["tenant_id"])
-
+        Activity.set_baggage_item("TenantId", tenant.tenant_id, context=BlocksContextManager.get_current())
+        print(f"TenantId set in baggage: {tenant.tenant_id}")
         # Construct and set BlocksContext
         ctx = BlocksContextManager.create(
-            tenant_id=tenant["TenantId"],
+            tenant_id=tenant.tenant_id,
             roles=[],
             user_id="",
             is_authenticated=False,
-            request_uri=request.url.to_string(),
+            request_uri=request.url.path,
             organization_id="",
             expire_on=datetime.now(),
             email="",
@@ -64,14 +64,14 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
             }
         )
 
-    def _is_valid_origin_or_referer(self, request: Request, tenant: dict) -> bool:
+    def _is_valid_origin_or_referer(self, request: Request, tenant: Tenant) -> bool:
         def extract_domain(url: str) -> str:
             try:
                 return url.split("//")[-1].split("/")[0].split(":")[0]
             except:
                 return ""
 
-        allowed = set(domain.lower() for domain in tenant.get("allowed_domains", []))
+        allowed = tenant.allowed_domains
         current = extract_domain(request.headers.get("origin") or "") or extract_domain(request.headers.get("referer") or "")
 
-        return not current or current == "localhost" or current == tenant.get("application_domain") or current in allowed
+        return not current or current == "localhost" or current == tenant.application_domain or current in allowed

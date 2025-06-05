@@ -113,14 +113,16 @@ class Activity:
     @staticmethod
     def set_baggage_item(key: str, value: str):
         ctx = get_current()
-        baggage.set_baggage(key, value, context=ctx)
+        n_ctx = baggage.set_baggage(key, value, context=ctx)
+        attach(n_ctx)
 
     @staticmethod
     def set_baggage_items_global(items: dict):
         ctx = get_current()
         for k, v in items.items():
-            baggage.set_baggage(k, v, context=ctx)
-
+            n_ctx = baggage.set_baggage(k, v, context=ctx)
+        attach(n_ctx)
+        
     @staticmethod
     def get_baggage_item(key: str) -> str | None:
         return baggage.get_baggage(key, context=get_current())
