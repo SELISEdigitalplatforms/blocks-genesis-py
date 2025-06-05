@@ -13,7 +13,7 @@ def configure_logger():
 
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
-
+    
     mongo_handler = MongoHandler()
 
     # Add context filter to enrich log records

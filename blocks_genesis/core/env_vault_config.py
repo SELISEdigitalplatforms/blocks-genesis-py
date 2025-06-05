@@ -22,6 +22,3 @@ class EnvVaultConfig:
             return config
         
         return all_env
-
-# Print all env variables
-EnvVaultConfig.get_config()

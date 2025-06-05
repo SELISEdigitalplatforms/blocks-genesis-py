@@ -1,72 +1,70 @@
-from contextlib import asynccontextmanager
 import logging
-from blocks_genesis.cache.cache_provider import CacheProvider
-from blocks_genesis.cache.redis_client import RedisClient
-from blocks_genesis.core.secret_loader import SecretLoader
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 import uvicorn
-
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from blocks_genesis.core.secret_loader import SecretLoader
+from blocks_genesis.cache.cache_provider import CacheProvider
+from blocks_genesis.cache.redis_client import RedisClient
 from blocks_genesis.database.db_context import DbContext
 from blocks_genesis.database.mongo_context import MongoDbContextProvider
+from blocks_genesis.middlewares.tenant_middleware import TenantValidationMiddleware
+from blocks_genesis.middlewares.trace_middleware import TraceContextMiddleware
+from blocks_genesis.tenant.tenant_service import initialize_tenant_service
 from blocks_genesis.lmt.log_config import configure_logger
 from blocks_genesis.lmt.mongo_log_exporter import MongoHandler
-from blocks_genesis.lmt.tracing import enable_tracing
-from blocks_genesis.tenant.tenant_service import TenantService
+from blocks_genesis.lmt.tracing import configure_tracing
 
-# Global variable to store secrets
-secrets_instance = None
+logger = logging.getLogger(__name__)
+secret_loader = SecretLoader("blocks_ai_api")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage app lifespan - startup and shutdown"""
-    global secrets_instance
-    
-    # Startup
-    try:
-        print("🚀 Starting up - Loading secrets...")
-        secret_loader = SecretLoader("blocks_ai_api")
-        await secret_loader.load_secrets()
-        secrets_instance = secret_loader
-        print("✅ Secrets loaded successfully!")
-    except Exception as e:
-        print(f"❌ Failed to load secrets: {e}")
-        # Uncomment to prevent startup on secret loading failure
-        # raise e
-    
-    yield  # App is running
-    
-    # Shutdown
-    print("🛑 Shutting down...")
-    secrets_instance = None
+    logger.info("🚀 Initializing services...")
+    logger.info("🔐 Loading secrets before app creation...")
+    await secret_loader.load_secrets()
+    logger.info("✅ Secrets loaded successfully!")
 
-app = FastAPI(lifespan=lifespan)
+    configure_logger()
+    logger.info("Logger started")
 
-configure_logger()
-logger = logging.getLogger(__name__)
-logger.info("Logger started")
-MongoHandler._mongo_logger.stop()
+    # Enable tracing after secrets are loaded
+    configure_tracing()
+    logger.info("🔍 Tracing enabled successfully!")
 
-enable_tracing(app)
+    CacheProvider.set_client(RedisClient())
+    initialize_tenant_service()
+    DbContext.set_provider(MongoDbContextProvider())
 
-TenantService.initialize()
-CacheProvider.set_client(RedisClient())
-DbContext.set_provider(MongoDbContextProvider())
- 
+    logger.info("✅ All services initialized!")
+
+    yield  # app running here
+
+    # Shutdown logic
+    if hasattr(MongoHandler, '_mongo_logger') and MongoHandler._mongo_logger:
+        MongoHandler._mongo_logger.stop()
+    logger.info("🛑 App shutting down...")
 
 
 
+app = FastAPI(lifespan=lifespan, middleware=[])
+
+# Add middleware in order
+app.add_middleware(TraceContextMiddleware)
+app.add_middleware(TenantValidationMiddleware)
+
+FastAPIInstrumentor.instrument_app(app)  ### Instrument FastAPI for OpenTelemetry
 
 
 @app.get("/")
 async def root():
-    return {"message": "Hello World", "secrets_loaded": secrets_instance is not None}
+    return {"message": "Hello World", "secrets_loaded": secret_loader.is_loaded()}
+
 
 @app.get("/health")
 async def health():
     return {
         "status": "healthy",
-        "secrets_status": "loaded" if secrets_instance else "not_loaded"
+        "secrets_status": "loaded" if secret_loader.is_loaded() else "not_loaded",
     }
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)

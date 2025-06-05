@@ -1,7 +1,6 @@
 from datetime import datetime
 from typing import List, Optional
 from pydantic import BaseModel, Field
-from bson import ObjectId
 
 class BaseEntity(BaseModel):
     id: str = Field(alias="_id")  # MongoDB _id field
@@ -17,4 +16,4 @@ class BaseEntity(BaseModel):
         # Ignore extra fields (equivalent to BsonIgnoreExtraElements)
         extra = "ignore"
         # Allow population by field name or alias
-        allow_population_by_field_name = True
+        validate_by_name = True

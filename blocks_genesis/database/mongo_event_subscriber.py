@@ -1,3 +1,4 @@
+from datetime import datetime
 from pymongo.monitoring import CommandListener
 from opentelemetry.trace import StatusCode
 
@@ -14,7 +15,7 @@ class MongoEventSubscriber(CommandListener):
             "db.system": "mongodb",
             "db.operation": event.command_name,
             "db.request_id": str(event.request_id),
-            "db.timestamp": str(event.timestamp),
+            "db.timestamp": datetime.now().isoformat(),
         })
 
         self._activities[event.request_id] = activity

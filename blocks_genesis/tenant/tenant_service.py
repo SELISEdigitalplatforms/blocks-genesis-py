@@ -1,27 +1,31 @@
 import asyncio
+import logging
 from typing import Dict, Optional, Tuple
 from pymongo import MongoClient
 
 from blocks_genesis.cache import CacheClient
 from blocks_genesis.cache.cache_provider import CacheProvider
-from blocks_genesis.core import blocks_secret
+from blocks_genesis.core.secret_loader import get_blocks_secret
 from blocks_genesis.tenant.tenant import Tenant
 
+_logger = logging.getLogger(__name__)
 
 class TenantService:
     """Manages tenant configuration with caching and real-time updates"""
     
     def __init__(self):
-        self.cache: CacheClient = CacheProvider.get_cache_client()
+        self._blocks_secret = get_blocks_secret()
+        self.cache: CacheClient = CacheProvider.get_client()
         if not self.cache:
             raise RuntimeError("Cache client not initialized")
-        self.client = MongoClient(blocks_secret.db_connection_string)
-        self.database = self.client[blocks_secret.root_db_name]
+        self.client = MongoClient(self._blocks_secret.DatabaseConnectionString)
+        self.database = self.client[self._blocks_secret.RootDatabaseName]
         
         # In-memory cache
         self._tenant_cache: Dict[str, Tenant] = {}
         self._version_key = "tenant::version"
         self._update_channel = "tenant::updates"
+        self._collection_name = "Tenants"
         
         # Initialize
         self._load_tenants()
@@ -49,7 +53,7 @@ class TenantService:
             return None
         
         try:
-            tenant_dict = self.database["tenants"].find_one({
+            tenant_dict = self.database[self._collection_name].find_one({
                 "$or": [
                     {"ApplicationDomain": domain},
                     {"AllowedDomains": {"$in": [domain]}}
@@ -62,7 +66,7 @@ class TenantService:
                 return tenant
                 
         except Exception as e:
-            self.logger.error(f"Error getting tenant by domain {domain}: {e}")
+            _logger.error(f"Error getting tenant by domain {domain}: {e}")
         
         return None
     
@@ -77,22 +81,22 @@ class TenantService:
     def _load_tenants(self):
         """Load all tenants into cache"""
         try:
-            tenants = list(self.database["tenants"].find({}))
+            tenants = list(self.database[self._collection_name].find({}))
             self._tenant_cache.clear()
             
             for tenant_dict in tenants:
                 tenant = Tenant(**tenant_dict)
                 self._tenant_cache[tenant.tenant_id] = tenant
             
-            self.logger.info(f"Loaded {len(tenants)} tenants into cache")
+            _logger.info(f"Loaded {len(tenants)} tenants into cache")
             
         except Exception as e:
-            self.logger.error(f"Failed to load tenants: {e}")
+            _logger.error(f"Failed to load tenants: {e}")
     
     def _load_tenant_from_db(self, tenant_id: str) -> Optional[Tenant]:
         """Load single tenant from database"""
         try:
-            tenant_dict = self.database["tenants"].find_one({
+            tenant_dict = self.database[self._collection_name].find_one({
                 "$or": [
                     {"_id": tenant_id},
                     {"TenantId": tenant_id}
@@ -103,7 +107,7 @@ class TenantService:
                 return Tenant(**tenant_dict)
                 
         except Exception as e:
-            self.logger.error(f"Error loading tenant {tenant_id}: {e}")
+            _logger.error(f"Error loading tenant {tenant_id}: {e}")
         
         return None
     
@@ -114,18 +118,18 @@ class TenantService:
                 self._update_channel, 
                 self._handle_update
             )
-            self.logger.info("Subscribed to tenant updates")
+            _logger.info("Subscribed to tenant updates")
             
         except Exception as e:
-            self.logger.error(f"Failed to subscribe to updates: {e}")
+            _logger.error(f"Failed to subscribe to updates: {e}")
     
     def _handle_update(self, channel: str, message: str):
         """Handle tenant cache update notification"""
         try:
-            self.logger.info(f"Received tenant update: {message}")
+            _logger.info(f"Received tenant update: {message}")
             self._load_tenants()
         except Exception as e:
-            self.logger.error(f"Error handling update: {e}")
+            _logger.error(f"Error handling update: {e}")
 
 
 # Global tenant service instance

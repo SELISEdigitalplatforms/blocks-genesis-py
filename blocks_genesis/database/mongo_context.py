@@ -8,7 +8,7 @@ from contextvars import ContextVar
 
 from blocks_genesis.auth.blocks_context import BlocksContext
 from blocks_genesis.database.mongo_event_subscriber import MongoEventSubscriber
-from blocks_genesis.tenant.tenant_service import TenantService
+from blocks_genesis.tenant.tenant_service import get_tenant_service
 from blocks_genesis.database.db_context_provider import DbContextProvider
 
 
@@ -21,7 +21,7 @@ _logger = logging.getLogger(__name__)
 class MongoDbContextProvider(DbContextProvider):
     def __init__(self):
         self._logger = _logger
-        self._tenants = TenantService.get_tenant_service()
+        self._tenants = get_tenant_service()
         
         register(MongoEventSubscriber())
 

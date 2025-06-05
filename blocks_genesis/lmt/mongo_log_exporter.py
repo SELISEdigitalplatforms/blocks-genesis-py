@@ -3,59 +3,49 @@ import threading
 from datetime import datetime
 from queue import Queue, Empty
 from pymongo import MongoClient, ASCENDING, DESCENDING
-from opentelemetry.trace import get_current_span
 
-from blocks_genesis.core.blocks_secret import blocks_secret_instance
-
-
-mongo_client = MongoClient(blocks_secret_instance.LogConnectionString)
-db = mongo_client[blocks_secret_instance.LogDatabaseName]
-
-def ensure_collection():
-    if blocks_secret_instance.ServiceName not in db.list_collection_names():
-        db.create_collection(
-            blocks_secret_instance.ServiceName,
-            timeseries={
-                "timeField": "Timestamp",
-                "metaField": "TenantId",
-                "granularity": "minutes"
-            }
-        )
-        db[blocks_secret_instance.ServiceName].create_index(
-            [("TenantId", ASCENDING), ("Timestamp", DESCENDING)],
-            name="Tenant_Timestamp_Index"
-        )
-
-ensure_collection()
-
-def get_trace_context():
-    span = get_current_span()
-    ctx = span.get_span_context() if span else None
-    trace_id = f"{ctx.trace_id:032x}" if ctx and ctx.trace_id else None
-    span_id = f"{ctx.span_id:016x}" if ctx and ctx.span_id else None
-    tenant_id = span.attributes.get("tenant_id", "Misc") if span else "Misc"
-    return tenant_id, trace_id, span_id
+from blocks_genesis.core.secret_loader import get_blocks_secret
+from blocks_genesis.lmt.activity import Activity
 
 
 class MongoBatchLogger:
     def __init__(self, batch_size=50, flush_interval_sec=2.0):
         self.batch_size = batch_size
         self.flush_interval_sec = flush_interval_sec
-        self.collection = db[blocks_secret_instance.ServiceName]
+        self.blocks_secret = get_blocks_secret()
+        # Lazy initialization of MongoDB connection
+        mongo_client = MongoClient(self.blocks_secret.LogConnectionString)
+        db = mongo_client[self.blocks_secret.LogDatabaseName]
+
+        if self.blocks_secret.ServiceName not in db.list_collection_names():
+            db.create_collection(
+                self.blocks_secret.ServiceName,
+                timeseries={
+                    "timeField": "Timestamp",
+                    "metaField": "TenantId",
+                    "granularity": "minutes"
+                }
+            )
+            db[self.blocks_secret.ServiceName].create_index(
+                [("TenantId", ASCENDING), ("Timestamp", DESCENDING)],
+                name="Tenant_Timestamp_Index"
+            )
+
+        self.collection = db[self.blocks_secret.ServiceName]
         self.queue = Queue()
         self._stop_event = threading.Event()
         self.worker_thread = threading.Thread(target=self._background_worker, daemon=True)
         self.worker_thread.start()
 
     def enqueue(self, record: logging.LogRecord):
-        tenant_id, trace_id, span_id = get_trace_context()
         doc = {
             "Timestamp": datetime.now(),
             "Level": record.levelname,
             "Message": record.getMessage(),
-            "TenantId": tenant_id,
-            "TraceId": trace_id,
-            "SpanId": span_id
+            "TenantId": record.TenantId or "miscellaneous",
+            "LoggerName": record.name,
+            "TraceId": record.TraceId or Activity.get_trace_id(),
+            "SpanId": record.SpanId or Activity.get_span_id(),
         }
         self.queue.put(doc)
 
@@ -92,7 +82,6 @@ class MongoHandler(logging.Handler):
 
     def __init__(self, batch_size=50, flush_interval_sec=2.0):
         super().__init__()
-        # Singleton pattern for the batch logger
         if not MongoHandler._mongo_logger:
             MongoHandler._mongo_logger = MongoBatchLogger(batch_size, flush_interval_sec)
         self.mongo_logger = MongoHandler._mongo_logger
@@ -106,8 +95,8 @@ class MongoHandler(logging.Handler):
 
 class TraceContextFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        tenant_id, trace_id, span_id = get_trace_context()
-        record.TenantId = tenant_id
-        record.TraceId = trace_id
-        record.SpanId = span_id
+        """Add trace context to log records."""
+        record.TenantId = Activity.get_baggage_item("TenantId") or "miscellaneous"
+        record.TraceId = Activity.get_trace_id()
+        record.SpanId = Activity.get_span_id()
         return True

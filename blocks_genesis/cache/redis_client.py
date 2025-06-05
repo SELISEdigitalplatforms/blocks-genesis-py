@@ -6,7 +6,7 @@ import redis.asyncio as aioredis
 from opentelemetry.trace import StatusCode
 
 from blocks_genesis.cache.CacheClient import CacheClient
-from blocks_genesis.core.blocks_secret import blocks_secret_instance
+from blocks_genesis.core.secret_loader import get_blocks_secret
 from blocks_genesis.lmt.activity import Activity
 
 
@@ -15,21 +15,51 @@ class RedisClient(CacheClient):
     
     def __init__(self):
         """Initialize Redis client"""
-        self._connection_string = blocks_secret_instance.cache_connection_string
+        self._blocks_secret = get_blocks_secret()
+        self._connection_string = self._blocks_secret.CacheConnectionString
         self._subscriptions: Dict[str, Callable] = {}
         self._disposed = False
         self._pubsub_tasks: Dict[str, asyncio.Task] = {}
         
         # Parse connection string and initialize clients
-        self._redis_config = self._parse_connection_string(blocks_secret_instance.cache_connection_string)
+        self._redis_config = self._parse_connection_string(self._blocks_secret.CacheConnectionString)
         self._sync_client = redis.Redis(**self._redis_config)
         self._async_client: Optional[aioredis.Redis] = None
     
     def _parse_connection_string(self, connection_string: str) -> Dict[str, Any]:
-        """Parse Redis connection string"""
-        return redis.connection.parse_url(connection_string)
-            
-    
+        parts = connection_string.split(',', 1)
+        host_port = parts[0]  # e.g. "hostname:6379"
+        
+        query = ""
+        if len(parts) > 1:
+            query = parts[1].replace(',', '&')
+        
+        url = f"redis://{host_port}"
+        if query:
+            url += f"/?{query}"
+        
+        config = redis.connection.parse_url(url)
+
+        # Allowed keys for redis.Redis constructor
+        allowed_keys = {
+            'host', 'port', 'username', 'password', 'db', 'ssl', 
+            'socket_connect_timeout', 'socket_timeout',
+            'encoding', 'encoding_errors', 'decode_responses',
+            'retry_on_timeout', 'max_connections'
+        }
+
+        # Map keys like connectTimeout -> socket_connect_timeout (in seconds)
+        if 'connectTimeout' in config:
+            # convert from ms to seconds
+            config['socket_connect_timeout'] = int(config.pop('connectTimeout')) / 1000
+        if 'syncTimeout' in config:
+            config['socket_timeout'] = int(config.pop('syncTimeout')) / 1000
+
+        # Remove unsupported keys
+        config = {k: v for k, v in config.items() if k in allowed_keys}
+
+        return config
+ 
     async def _get_async_client(self) -> aioredis.Redis:
         """Get or create async Redis client"""
         if self._async_client is None:

@@ -15,5 +15,3 @@ class BlocksSecret(BaseModel):
     DatabaseConnectionString: str = ""
     RootDatabaseName: str = ""
 
-
-blocks_secret_instance: Optional[BlocksSecret] = None
