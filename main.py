@@ -8,6 +8,7 @@ from blocks_genesis.cache.cache_provider import CacheProvider
 from blocks_genesis.cache.redis_client import RedisClient
 from blocks_genesis.database.db_context import DbContext
 from blocks_genesis.database.mongo_context import MongoDbContextProvider
+from blocks_genesis.middlewares.global_exception_middleware import GlobalExceptionHandlerMiddleware
 from blocks_genesis.middlewares.tenant_middleware import TenantValidationMiddleware
 from blocks_genesis.middlewares.trace_middleware import TraceContextMiddleware
 from blocks_genesis.tenant.tenant_service import initialize_tenant_service
@@ -53,6 +54,7 @@ app = FastAPI(lifespan=lifespan, debug=True)
 # Add middleware in order
 app.add_middleware(TraceContextMiddleware)
 app.add_middleware(TenantValidationMiddleware)
+app.add_middleware(GlobalExceptionHandlerMiddleware)
 
 FastAPIInstrumentor.instrument_app(app)  ### Instrument FastAPI for OpenTelemetry
 
