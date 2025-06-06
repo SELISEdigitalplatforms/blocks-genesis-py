@@ -11,7 +11,6 @@ from blocks_genesis.database.mongo_event_subscriber import MongoEventSubscriber
 from blocks_genesis.tenant.tenant_service import get_tenant_service
 from blocks_genesis.database.db_context_provider import DbContextProvider
 
-
 _db_cache: ContextVar[Dict[str, Database]] = ContextVar("_db_cache", default={})
 _client_cache: ContextVar[Dict[str, MongoClient]] = ContextVar("_client_cache", default={})
 
@@ -22,10 +21,9 @@ class MongoDbContextProvider(DbContextProvider):
     def __init__(self):
         self._logger = _logger
         self._tenants = get_tenant_service()
-        
         register(MongoEventSubscriber())
 
-    def get_database(self, tenant_id: Optional[str] = None) -> Optional[Database]:
+    async def get_database(self, tenant_id: Optional[str] = None) -> Optional[Database]:
         tenant_id = tenant_id or getattr(BlocksContext.get_context(), 'tenant_id', None)
         if not tenant_id:
             self._logger.warning("Tenant ID is missing in context")
@@ -37,7 +35,7 @@ class MongoDbContextProvider(DbContextProvider):
         if tenant_id in dbs:
             return dbs[tenant_id]
 
-        db_name, connection_string = self._tenants.get_tenant_database_connection_string(tenant_id)
+        db_name, connection_string = await self._tenants.get_db_connection(tenant_id)
         if not connection_string or not db_name:
             raise ValueError(f"Missing connection info for tenant {tenant_id}")
 
@@ -50,7 +48,7 @@ class MongoDbContextProvider(DbContextProvider):
         new_dbs = dict(dbs)
         new_dbs[tenant_id] = db
         _db_cache.set(new_dbs)
-        _client_cache.set(dict(clients))  # Ensure updated clients stored
+        _client_cache.set(dict(clients))
 
         return db
 
@@ -79,8 +77,8 @@ class MongoDbContextProvider(DbContextProvider):
 
         return db
 
-    def get_collection(self, collection_name: str, tenant_id: Optional[str] = None) -> Collection:
-        db = self.get_database(tenant_id)
+    async def get_collection(self, collection_name: str, tenant_id: Optional[str] = None) -> Collection:
+        db = await self.get_database(tenant_id)
         if not db:
             raise RuntimeError("No database found for tenant")
         return db[collection_name]

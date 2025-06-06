@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from typing import Dict, Optional, Tuple
-from pymongo import MongoClient
+from motor.motor_asyncio import AsyncIOMotorClient
 
 from blocks_genesis.cache import CacheClient
 from blocks_genesis.cache.cache_provider import CacheProvider
@@ -12,122 +12,99 @@ _logger = logging.getLogger(__name__)
 
 class TenantService:
     """Manages tenant configuration with caching and real-time updates"""
-    
+
     def __init__(self):
         self._blocks_secret = get_blocks_secret()
         self.cache: CacheClient = CacheProvider.get_client()
         if not self.cache:
             raise RuntimeError("Cache client not initialized")
-        self.client = MongoClient(self._blocks_secret.DatabaseConnectionString)
+
+        self.client = AsyncIOMotorClient(self._blocks_secret.DatabaseConnectionString)
         self.database = self.client[self._blocks_secret.RootDatabaseName]
-        
-        # In-memory cache
+
         self._tenant_cache: Dict[str, Tenant] = {}
-        self._version_key = "tenant::version"
         self._update_channel = "tenant::updates"
         self._collection_name = "Tenants"
-        
-        # Initialize
-        self._load_tenants()
+
+    async def initialize(self):
+        """Explicit initializer for async setup"""
+        await self._load_tenants()
         asyncio.create_task(self._subscribe_to_updates())
-    
-    def get_tenant(self, tenant_id: str) -> Optional[Tenant]:
-        """Get tenant by ID with caching"""
+
+    async def get_tenant(self, tenant_id: str) -> Optional[Tenant]:
         if not tenant_id:
             return None
-        
-        # Check cache first
         if tenant_id in self._tenant_cache:
             return self._tenant_cache[tenant_id]
-        
-        # Load from database
-        tenant = self._load_tenant_from_db(tenant_id)
+
+        tenant = await self._load_tenant_from_db(tenant_id)
         if tenant:
-            self._tenant_cache[tenant_id] = tenant
-        
+            self._tenant_cache[tenant.tenant_id] = tenant
         return tenant
-    
-    def get_tenant_by_domain(self, domain: str) -> Optional[Tenant]:
-        """Get tenant by application domain"""
+
+    async def get_tenant_by_domain(self, domain: str) -> Optional[Tenant]:
         if not domain:
             return None
-        
         try:
-            tenant_dict = self.database[self._collection_name].find_one({
+            tenant_dict = await self.database[self._collection_name].find_one({
                 "$or": [
                     {"ApplicationDomain": domain},
                     {"AllowedDomains": {"$in": [domain]}}
                 ]
             })
-            
             if tenant_dict:
                 tenant = Tenant(**tenant_dict)
                 self._tenant_cache[tenant.tenant_id] = tenant
                 return tenant
-                
         except Exception as e:
             _logger.error(f"Error getting tenant by domain {domain}: {e}")
-        
         return None
-    
-    def get_db_connection(self, tenant_id: str) -> Tuple[Optional[str], Optional[str]]:
-        """Get tenant database connection info"""
-        tenant = self.get_tenant(tenant_id)
+
+    async def get_db_connection(self, tenant_id: str) -> Tuple[Optional[str], Optional[str]]:
+        tenant = await self.get_tenant(tenant_id)
         if tenant:
             return tenant.db_name, tenant.db_connection_string
         return None, None
-    
-    
-    def _load_tenants(self):
-        """Load all tenants into cache"""
+
+    async def _load_tenants(self):
         try:
-            tenants = list(self.database[self._collection_name].find({}))
+            cursor = self.database[self._collection_name].find({})
             self._tenant_cache.clear()
-            
-            for tenant_dict in tenants:
+            async for tenant_dict in cursor:
                 tenant = Tenant(**tenant_dict)
                 self._tenant_cache[tenant.tenant_id] = tenant
-            
-            _logger.info(f"Loaded {len(tenants)} tenants into cache")
-            
+            _logger.info(f"Loaded {len(self._tenant_cache)} tenants into cache")
         except Exception as e:
             _logger.error(f"Failed to load tenants: {e}")
-    
-    def _load_tenant_from_db(self, tenant_id: str) -> Optional[Tenant]:
-        """Load single tenant from database"""
+
+    async def _load_tenant_from_db(self, tenant_id: str) -> Optional[Tenant]:
         try:
-            tenant_dict = self.database[self._collection_name].find_one({
+            tenant_dict = await self.database[self._collection_name].find_one({
                 "$or": [
                     {"_id": tenant_id},
                     {"TenantId": tenant_id}
                 ]
             })
-            
             if tenant_dict:
                 return Tenant(**tenant_dict)
-                
         except Exception as e:
             _logger.error(f"Error loading tenant {tenant_id}: {e}")
-        
         return None
-    
+
     async def _subscribe_to_updates(self):
-        """Subscribe to tenant update notifications"""
         try:
             await self.cache.subscribe_async(
-                self._update_channel, 
+                self._update_channel,
                 self._handle_update
             )
             _logger.info("Subscribed to tenant updates")
-            
         except Exception as e:
             _logger.error(f"Failed to subscribe to updates: {e}")
-    
-    def _handle_update(self, channel: str, message: str):
-        """Handle tenant cache update notification"""
+
+    async def _handle_update(self, channel: str, message: str):
         try:
             _logger.info(f"Received tenant update: {message}")
-            self._load_tenants()
+            await self._load_tenants()
         except Exception as e:
             _logger.error(f"Error handling update: {e}")
 
@@ -136,13 +113,12 @@ class TenantService:
 _tenant_service: Optional[TenantService] = None
 
 def get_tenant_service() -> TenantService:
-    """Get global tenant service"""
     if _tenant_service is None:
         raise RuntimeError("Tenant service not initialized")
     return _tenant_service
 
-def initialize_tenant_service() -> TenantService:
-    """Initialize global tenant service"""
+async def initialize_tenant_service() -> TenantService:
     global _tenant_service
     _tenant_service = TenantService()
+    await _tenant_service.initialize()
     return _tenant_service

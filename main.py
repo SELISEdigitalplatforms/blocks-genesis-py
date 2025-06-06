@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI):
     logger.info("🔍 Tracing enabled successfully!")
 
     CacheProvider.set_client(RedisClient())
-    initialize_tenant_service()
+    await initialize_tenant_service()
     DbContext.set_provider(MongoDbContextProvider())
 
     logger.info("✅ All services initialized!")

@@ -18,7 +18,7 @@ dependencies = [
     "opentelemetry-sdk>=1.33.1",
     "opentelemetry-instrumentation-fastapi>=0.54b1",
     "opentelemetry-instrumentation-redis>=0.54b1",
-    "aiohttp>=3.12.9",
+    "aiohttp>=3.12.9"
 ]
 
 [build-system]

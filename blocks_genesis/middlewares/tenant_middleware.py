@@ -2,7 +2,7 @@ from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from datetime import datetime
-from blocks_genesis.auth.blocks_context import BlocksContext, BlocksContextManager
+from blocks_genesis.auth.blocks_context import BlocksContextManager
 from blocks_genesis.lmt.activity import Activity
 from blocks_genesis.tenant.tenant import Tenant
 from blocks_genesis.tenant.tenant_service import get_tenant_service
@@ -17,11 +17,11 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
 
         if not api_key:
             domain = str(request.url.hostname)
-            tenant = tenant_service.get_tenant_by_domain(domain)
+            tenant = await tenant_service.get_tenant_by_domain(domain)
             if not tenant:
                 return self._reject(404, "Not_Found: Application_Not_Found")
         else:
-            tenant = tenant_service.get_tenant(api_key)
+            tenant = await tenant_service.get_tenant(api_key)
 
         if not tenant or tenant.is_disabled:
             return self._reject(404, "Not_Found: Application_Not_Found")
