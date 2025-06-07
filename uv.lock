@@ -160,6 +160,20 @@ wheels = [
 ]
 
 [[package]]
+name = "azure-servicebus"
+version = "7.14.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "azure-core" },
+    { name = "isodate" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b3/b5/82bbdd24c6221519a10c10cae931e67dc97f8db3c9bf2318c6dbe27ac282/azure_servicebus-7.14.2.tar.gz", hash = "sha256:4014b7ac882e0d9ff876a3302818607e1a640b93e9d482073d639f5b04266e5c", size = 523514, upload-time = "2025-04-09T22:15:37.454Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fc/9e/37a27b8e575f88a7463e82d777651ebd8bedb77970f170819b1b3d176f96/azure_servicebus-7.14.2-py3-none-any.whl", hash = "sha256:154bdde487ae3bd581fd49d207da4892091d9b61ab95f4cd4deab6dd4bb4649a", size = 411426, upload-time = "2025-04-09T22:15:39.537Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2025.4.26"
 source = { registry = "https://pypi.org/simple" }
@@ -860,6 +874,7 @@ dependencies = [
     { name = "aiohttp" },
     { name = "azure-identity" },
     { name = "azure-keyvault-secrets" },
+    { name = "azure-servicebus" },
     { name = "fastapi" },
     { name = "motor" },
     { name = "opentelemetry-api" },
@@ -879,6 +894,7 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.12.9" },
     { name = "azure-identity", specifier = ">=1.7.0" },
     { name = "azure-keyvault-secrets", specifier = ">=4.3.0" },
+    { name = "azure-servicebus", specifier = ">=7.14.2" },
     { name = "fastapi", specifier = ">=0.68.0" },
     { name = "motor", specifier = ">=2.5.0" },
     { name = "opentelemetry-api", specifier = ">=1.33.1" },
