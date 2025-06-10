@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
 @dataclass
-class Message:
+class EventMessage:
     body: str
     type: str

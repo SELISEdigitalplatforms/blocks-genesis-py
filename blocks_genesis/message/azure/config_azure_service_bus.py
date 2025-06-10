@@ -1,5 +1,5 @@
 import asyncio
-from typing import Optional, List
+from typing import Optional
 from azure.servicebus.aio import ServiceBusAdministrationClient
 from azure.servicebus.management import (
     CreateQueueOptions,
@@ -47,8 +47,7 @@ class ConfigAzureServiceBus:
                     name=queue_name,
                     max_size_in_megabytes=cls._message_config.azure_service_bus_config.queue_max_size_in_megabytes,
                     max_delivery_count=cls._message_config.azure_service_bus_config.queue_max_delivery_count,
-                    default_message_time_to_live=cls._message_config.azure_service_bus_config.queue_default_message_ttl,
-                    lock_duration="PT1H"  # 1 hour
+                    default_message_time_to_live=cls._message_config.azure_service_bus_config.queue_default_message_ttl
                 )
                 tasks.append(cls._admin_client.create_queue(options))
 
@@ -103,8 +102,7 @@ class ConfigAzureServiceBus:
                 topic_name=topic_name,
                 subscription_name=subscription_name,
                 max_delivery_count=cls._message_config.azure_service_bus_config.topic_subscription_max_delivery_count,
-                default_message_time_to_live=cls._message_config.azure_service_bus_config.topic_subscription_default_message_ttl,
-                lock_duration="PT5M"  # 5 minutes
+                default_message_time_to_live=cls._message_config.azure_service_bus_config.topic_subscription_default_message_ttl
             )
 
             await cls._admin_client.create_subscription(options)

@@ -1,19 +1,23 @@
+from asyncio import Lock
 import json
-from typing import TypeVar, Generic, Dict, Optional
+from typing import TypeVar, Dict
 from azure.servicebus.aio import ServiceBusClient, ServiceBusSender
 from azure.servicebus import ServiceBusMessage
 from collections import defaultdict
-from asyncio import Lock
-
-from context import get_context  # Your equivalent of BlocksContext.GetContext
-from tracing import tracer       # Assuming OpenTelemetry Tracer is configured
-from message_config import MessageConfiguration
+from blocks_genesis.auth.blocks_context import BlocksContextManager
+from blocks_genesis.lmt.activity import Activity
+from blocks_genesis.message.message_client import MessageClient
+from blocks_genesis.message.message_configuration import MessageConfiguration
 from consumer_message import ConsumerMessage
-from message import Message
+from blocks_genesis.message.event_message import Message
 
 T = TypeVar('T')
 
-class AzureMessageClient:
+class AzureMessageClient(MessageClient):
+    """AzureMessageClient is responsible for sending messages to Azure Service Bus queues or topics.
+    It initializes the ServiceBusClient and manages senders for each queue or topic.
+    It uses asynchronous methods to send messages, ensuring that the client can handle multiple requests concurrently.
+    """
     def __init__(self, message_config: MessageConfiguration):
         self._message_config = message_config
         self._client = ServiceBusClient.from_connection_string(message_config.connection)
@@ -39,14 +43,14 @@ class AzureMessageClient:
             return self._senders[name]
 
     async def _send_to_azure_bus_async(self, consumer_message: ConsumerMessage[T], is_topic: bool = False):
-        security_context = get_context()
+        security_context = BlocksContextManager.get_context()
 
-        with tracer.start_as_current_span("messaging.azure.servicebus.send") as span:
-            span.set_attribute("messaging.system", "azure.servicebus")
-            span.set_attribute("messaging.destination", consumer_message.consumer_name)
-            span.set_attribute("messaging.destination_kind", "topic" if is_topic else "queue")
-            span.set_attribute("messaging.operation", "send")
-            span.set_attribute("messaging.message_type", type(consumer_message.payload).__name__)
+        with Activity("messaging.azure.servicebus.send") as activity:
+            activity.set_properties({"messaging.system": "azure.servicebus",
+                                     "messaging.destination": consumer_message.consumer_name,
+                                     "messaging.destination_kind": "topic" if is_topic else "queue",
+                                     "messaging.operation": "send",
+                                     "messaging.message_type": type(consumer_message.payload).__name__})
 
             sender = await self._get_sender(consumer_message.consumer_name)
 
@@ -59,10 +63,10 @@ class AzureMessageClient:
                 body=json.dumps(message_body.__dict__),
                 application_properties={
                     "TenantId": security_context.tenant_id if security_context else None,
-                    "TraceId": span.get_span_context().trace_id,
-                    "SpanId": span.get_span_context().span_id,
+                    "TraceId": Activity.get_trace_id(),
+                    "SpanId": Activity.get_span_id(),
                     "SecurityContext": consumer_message.context or json.dumps(security_context.__dict__ if security_context else {}),
-                    "Baggage": json.dumps(dict(span.get_span_context().baggage.items())) if span.get_span_context().baggage else "{}"
+                    "Baggage": json.dumps(dict(Activity.get_baggages()))
                 }
             )
 

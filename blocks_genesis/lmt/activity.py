@@ -1,3 +1,4 @@
+from typing import Mapping
 from opentelemetry import trace, baggage
 from opentelemetry.trace import (
     get_current_span,
@@ -126,3 +127,7 @@ class Activity:
     @staticmethod
     def get_baggage_item(key: str) -> str | None:
         return baggage.get_baggage(key, context=get_current())
+    
+    @staticmethod
+    def get_baggages() -> Mapping[str, object]:
+        return baggage.get_all(context=get_current())
