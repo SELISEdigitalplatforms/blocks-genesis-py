@@ -15,25 +15,21 @@ from blocks_genesis.message.message_configuration import MessageConfiguration
 logger = logging.getLogger(__name__)
 
 class AzureMessageWorker:
-    def __init__(self, message_config: MessageConfiguration, consumer: Consumer):
+    def __init__(self, message_config: MessageConfiguration):
         self._logger = logger
         self._message_config = message_config
-        self._consumer = consumer  # <--- Inject consumer
+        self._consumer = Consumer()
         self._service_bus_client: Optional[ServiceBusClient] = None
         self._receivers: List[ServiceBusReceiver] = []
         self._active_message_renewals: Dict[str, asyncio.Event] = {}
         self._tracer = trace.get_tracer(__name__)
 
     def initialize(self):
-        try:
-            if not self._message_config.connection:
-                self._logger.error("Connection string missing")
-                raise ValueError("Connection string missing")
-            self._service_bus_client = ServiceBusClient.from_connection_string(self._message_config.connection)
-            self._logger.info(f"Service Bus Client initialized at: {asyncio.get_event_loop().time()}")
-        except Exception as ex:
-            self._logger.error(f"Error during initialization: {ex}")
-            raise
+        if not self._message_config.connection:
+            self._logger.error("Connection string missing")
+            raise ValueError("Connection string missing")
+        self._service_bus_client = ServiceBusClient.from_connection_string(self._message_config.connection)
+        self._logger.info("✅ Service Bus Client initialized")
 
     async def stop(self):
         for message_id, event in self._active_message_renewals.items():
@@ -50,30 +46,25 @@ class AzureMessageWorker:
         if self._service_bus_client:
             await self._service_bus_client.close()
 
-        self._logger.info(f"Worker stopped at: {asyncio.get_event_loop().time()}")
+        self._logger.info("🛑 Worker stopped")
 
     async def run(self):
-        try:
-            if not self._service_bus_client:
-                raise ValueError("Service Bus Client is not initialized")
+        if not self._service_bus_client:
+            raise ValueError("Service Bus Client is not initialized")
 
-            queue_task = asyncio.create_task(self.process_queues())
-            topic_task = asyncio.create_task(self.process_topics())
-            await asyncio.gather(queue_task, topic_task)
-        except Exception as ex:
-            self._logger.error(f"Error in run: {ex}")
-            raise
+        receiver_tasks = []
 
-    async def process_queues(self):
+        # Process queues
         for queue_name in self._message_config.azure_service_bus_configuration.queues:
             receiver = self._service_bus_client.get_queue_receiver(
                 queue_name=queue_name,
                 prefetch_count=self._message_config.azure_service_bus_configuration.queue_prefetch_count
             )
+            await receiver.__aenter__()  # Explicitly enter async context
             self._receivers.append(receiver)
-            asyncio.create_task(self.process_receiver(receiver))
+            receiver_tasks.append(self.process_receiver(receiver))
 
-    async def process_topics(self):
+        # Process topics
         for topic_name in self._message_config.azure_service_bus_configuration.topics:
             subscription_name = self._message_config.subscription_name.get(topic_name, "default-subscription")
             receiver = self._service_bus_client.get_subscription_receiver(
@@ -81,19 +72,27 @@ class AzureMessageWorker:
                 subscription_name=subscription_name,
                 prefetch_count=self._message_config.azure_service_bus_configuration.topic_prefetch_count
             )
+            await receiver.__aenter__()
             self._receivers.append(receiver)
-            asyncio.create_task(self.process_receiver(receiver))
+            receiver_tasks.append(self.process_receiver(receiver))
+
+        self._logger.info("🚀 Receivers started")
+
+        # This will block and keep running until cancelled
+        await asyncio.gather(*receiver_tasks)
 
     async def process_receiver(self, receiver: ServiceBusReceiver):
         try:
             async for message in receiver:
                 await self.message_handler(receiver, message)
-        finally:
-            await receiver.close()
+        except asyncio.CancelledError:
+            self._logger.info("Receiver cancelled")
+        except Exception as ex:
+            self._logger.error(f"Receiver error: {ex}")
 
     async def message_handler(self, receiver: ServiceBusReceiver, message: ServiceBusReceivedMessage):
         message_id = message.message_id
-        self._logger.info(f"Received message: {message_id} at: {asyncio.get_event_loop().time()}")
+        self._logger.info(f"Received message: {message_id}")
 
         trace_id = message.application_properties.get(b"TraceId", b"").decode("utf-8")
         span_id = message.application_properties.get(b"SpanId", b"").decode("utf-8")
@@ -167,9 +166,7 @@ class AzureMessageWorker:
                 await asyncio.sleep(renewal_interval)
                 processing_time = asyncio.get_event_loop().time() - start_time
                 if processing_time > max_processing_time:
-                    self._logger.warning(
-                        f"Message {message_id} exceeded max time ({max_processing_time}s); stopping lock renewal."
-                    )
+                    self._logger.warning(f"Message {message_id} exceeded max time ({max_processing_time}s); stopping lock renewal.")
                     break
 
                 try:

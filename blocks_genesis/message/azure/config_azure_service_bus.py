@@ -1,14 +1,6 @@
-import asyncio
 from typing import Optional
-from azure.servicebus.aio import ServiceBusAdministrationClient
-from azure.servicebus.management import (
-    CreateQueueOptions,
-    CreateTopicOptions,
-    CreateSubscriptionOptions
-)
-
+from azure.servicebus.management import ServiceBusAdministrationClient
 from blocks_genesis.message.message_configuration import MessageConfiguration
-
 
 
 class ConfigAzureServiceBus:
@@ -16,101 +8,91 @@ class ConfigAzureServiceBus:
     _message_config: Optional[MessageConfiguration] = None
 
     @classmethod
-    async def configure_queue_and_topic_async(cls, message_config: MessageConfiguration):
+    def configure_queue_and_topic(cls, message_config: MessageConfiguration):
         if not message_config.connection:
-            print("Error in creation of message queues/topics")
+            print("Error: Missing Service Bus connection string.")
             return
 
         try:
             cls._admin_client = ServiceBusAdministrationClient.from_connection_string(message_config.connection)
             cls._message_config = message_config
 
-            await asyncio.gather(
-                cls._create_queues_async(),
-                cls._create_topics_async()
+            cls._create_queues()
+            cls._create_topics_and_subscriptions()
+
+        except Exception as ex:
+            print(f"Exception during Service Bus configuration: {ex}")
+            raise
+
+    @classmethod
+    def _create_queues(cls):
+        queues = cls._message_config.azure_service_bus_configuration.queues or []
+
+        for queue_name in queues:
+            if cls._check_queue_exists(queue_name):
+                print(f"Queue '{queue_name}' already exists. Skipping creation.")
+                continue
+
+            cls._admin_client.create_queue(
+                queue_name,
+                max_size_in_megabytes=cls._message_config.azure_service_bus_configuration.queue_max_size_in_megabytes,
+                max_delivery_count=cls._message_config.azure_service_bus_configuration.queue_max_delivery_count,
+                default_message_time_to_live=cls._message_config.azure_service_bus_configuration.queue_default_message_time_to_live
             )
-        except Exception as ex:
-            print(f"Exception during service bus configuration: {ex}")
-            raise
+            print(f"✅ Queue created: {queue_name}")
 
     @classmethod
-    async def _create_queues_async(cls):
+    def _check_queue_exists(cls, queue_name: str) -> bool:
         try:
-            tasks = []
-            queues = cls._message_config.azure_service_bus_config.queues if cls._message_config.azure_service_bus_config else []
+            cls._admin_client.get_queue(queue_name)
+            return True
+        except Exception:
+            return False
 
-            for queue_name in queues:
-                if await cls._check_queue_exists_async(queue_name):
-                    continue
+    @classmethod
+    def _create_topics_and_subscriptions(cls):
+        topics = cls._message_config.azure_service_bus_configuration.topics or []
 
-                options = CreateQueueOptions(
-                    name=queue_name,
-                    max_size_in_megabytes=cls._message_config.azure_service_bus_config.queue_max_size_in_megabytes,
-                    max_delivery_count=cls._message_config.azure_service_bus_config.queue_max_delivery_count,
-                    default_message_time_to_live=cls._message_config.azure_service_bus_config.queue_default_message_ttl
+        for topic_name in topics:
+            if cls._check_topic_exists(topic_name):
+                print(f"Topic '{topic_name}' already exists. Skipping creation.")
+            else:
+                cls._admin_client.create_topic(
+                    topic_name,
+                    max_size_in_megabytes=cls._message_config.azure_service_bus_configuration.topic_max_size_in_megabytes,
+                    default_message_time_to_live=cls._message_config.azure_service_bus_configuration.topic_default_message_time_to_live
                 )
-                tasks.append(cls._admin_client.create_queue(options))
+                print(f"✅ Topic created: {topic_name}")
 
-            await asyncio.gather(*tasks)
-
-        except Exception as ex:
-            print(f"Exception while creating queues: {ex}")
-            raise
+            cls._create_subscription(topic_name)
 
     @classmethod
-    async def _check_queue_exists_async(cls, queue_name: str) -> bool:
-        return await cls._admin_client.get_queue_runtime_properties(queue_name) is not None
-
-    @classmethod
-    async def _create_topics_async(cls):
+    def _check_topic_exists(cls, topic_name: str) -> bool:
         try:
-            tasks = []
-            topics = cls._message_config.azure_service_bus_config.topics if cls._message_config.azure_service_bus_config else []
-
-            for topic_name in topics:
-                if await cls._check_topic_exists_async(topic_name):
-                    continue
-
-                options = CreateTopicOptions(
-                    name=topic_name,
-                    max_size_in_megabytes=cls._message_config.azure_service_bus_config.topic_max_size_in_megabytes,
-                    default_message_time_to_live=cls._message_config.azure_service_bus_config.topic_default_message_ttl
-                )
-                tasks.append(cls._admin_client.create_topic(options))
-
-            await asyncio.gather(*tasks)
-
-            # Create subscriptions
-            await asyncio.gather(*(cls._create_topic_subscription_async(tn) for tn in topics))
-
-        except Exception as ex:
-            print(f"Exception while creating topics: {ex}")
-            raise
+            cls._admin_client.get_topic(topic_name)
+            return True
+        except Exception:
+            return False
 
     @classmethod
-    async def _check_topic_exists_async(cls, topic_name: str) -> bool:
-        return await cls._admin_client.get_topic_runtime_properties(topic_name) is not None
+    def _create_subscription(cls, topic_name: str):
+        subscription_name = cls._message_config.get_subscription_name(topic_name)
+        if cls._check_subscription_exists(topic_name, subscription_name):
+            print(f"Subscription '{subscription_name}' for topic '{topic_name}' already exists. Skipping.")
+            return
+
+        cls._admin_client.create_subscription(
+            topic_name,
+            subscription_name,
+            max_delivery_count=cls._message_config.azure_service_bus_configuration.topic_subscription_max_delivery_count,
+            default_message_time_to_live=cls._message_config.azure_service_bus_configuration.topic_subscription_default_message_time_to_live
+        )
+        print(f"✅ Subscription '{subscription_name}' created for topic '{topic_name}'")
 
     @classmethod
-    async def _create_topic_subscription_async(cls, topic_name: str):
+    def _check_subscription_exists(cls, topic_name: str, subscription_name: str) -> bool:
         try:
-            subscription_name = cls._message_config.get_subscription_name(topic_name)
-            if await cls._check_subscription_exists_async(topic_name, subscription_name):
-                return
-
-            options = CreateSubscriptionOptions(
-                topic_name=topic_name,
-                subscription_name=subscription_name,
-                max_delivery_count=cls._message_config.azure_service_bus_config.topic_subscription_max_delivery_count,
-                default_message_time_to_live=cls._message_config.azure_service_bus_config.topic_subscription_default_message_ttl
-            )
-
-            await cls._admin_client.create_subscription(options)
-
-        except Exception as ex:
-            print(f"Exception while creating subscription for topic {topic_name}: {ex}")
-            raise
-
-    @classmethod
-    async def _check_subscription_exists_async(cls, topic_name: str, subscription_name: str) -> bool:
-        return await cls._admin_client.get_subscription_runtime_properties(topic_name, subscription_name) is not None
+            cls._admin_client.get_subscription(topic_name, subscription_name)
+            return True
+        except Exception:
+            return False

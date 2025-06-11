@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sys
 from contextlib import asynccontextmanager
 
 from blocks_genesis.cache.cache_provider import CacheProvider
@@ -19,61 +20,90 @@ from blocks_genesis.lmt.mongo_log_exporter import MongoHandler
 from blocks_genesis.lmt.tracing import configure_tracing
 from blocks_genesis.tenant.tenant_service import initialize_tenant_service
 
-logger = logging.getLogger(__name__)
-secret_loader = SecretLoader("blocks_ai_worker")
 
-@asynccontextmanager
-async def worker_lifecycle():
-    logger.info("🚀 Initializing services...")
-    logger.info("🔐 Loading secrets before app creation...")
-    await secret_loader.load_secrets()
-    logger.info("✅ Secrets loaded successfully!")
+class WorkerConsoleApp:
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+        self.secret_loader = SecretLoader("blocks_ai_worker")
+        self.message_worker: AzureMessageWorker = None
 
-    configure_logger()
-    logger.info("Logger started")
+    @asynccontextmanager
+    async def setup_services(self):
+        self.logger.info("🚀 Starting Blocks AI Worker Console App...")
 
-    # Enable tracing after secrets are loaded
-    configure_tracing()
-    logger.info("🔍 Tracing enabled successfully!")
+        try:
+            self.logger.info("🔐 Loading secrets...")
+            await self.secret_loader.load_secrets()
+            self.logger.info("✅ Secrets loaded successfully")
 
-    CacheProvider.set_client(RedisClient())
-    await initialize_tenant_service()
-    DbContext.set_provider(MongoDbContextProvider())
+            configure_logger()
+            self.logger.info("📝 Logger configured")
 
-    logger.info("⚙️ Initializing Azure Message Worker")
+            configure_tracing()
+            self.logger.info("🔍 Tracing configured")
 
-    message_config = MessageConfiguration(
-        connection=get_blocks_secret().MessageConnectionString,
-        azure_service_bus_configuration=AzureServiceBusConfiguration(
-            queues=["ai_queue"],
-            topics=[]
-        )
-    )
+            CacheProvider.set_client(RedisClient())
+            await initialize_tenant_service()
+            DbContext.set_provider(MongoDbContextProvider())
+            self.logger.info("✅ Cache, TenantService, and Mongo Context initialized")
 
-    # ⚠️ Await configuration if it is async
-    await ConfigAzureServiceBus().configure_queue_and_topic_async(message_config)
+            message_config = MessageConfiguration(
+                connection=get_blocks_secret().MessageConnectionString,
+                azure_service_bus_configuration=AzureServiceBusConfiguration(
+                    queues=["ai_queue", "ai_queue_2nd"],
+                    topics=[]
+                )
+            )
 
-    await AzureMessageClient.initialize(message_config)
+            ConfigAzureServiceBus().configure_queue_and_topic(message_config)
+            AzureMessageClient.initialize(message_config)
 
-    message_worker = AzureMessageWorker(message_config)
-    message_worker.initialize()
+            self.message_worker = AzureMessageWorker(message_config)
+            self.message_worker.initialize()
 
-    try:
-        yield message_worker  # Yield the worker to main()
-    finally:
-        logger.info("🛑 Stopping Azure Message Worker")
-        await message_worker.stop()
+            self.logger.info("✅ Azure Message Worker initialized and ready")
+            yield self.message_worker
+
+        except Exception as ex:
+            self.logger.error(f"❌ Startup failed: {ex}", exc_info=True)
+            raise
+
+        finally:
+            await self.cleanup()
+
+    async def cleanup(self):
+        self.logger.info("🛑 Cleaning up services...")
+
+        if self.message_worker:
+            await self.message_worker.stop()
 
         if hasattr(MongoHandler, '_mongo_logger') and MongoHandler._mongo_logger:
             MongoHandler._mongo_logger.stop()
 
-        logger.info("🚫 Shutdown complete")
+        self.logger.info("✅ Shutdown complete")
+
+    async def run(self):
+        async with self.setup_services() as worker:
+            self.logger.info("🔄 Worker running... Press Ctrl+C to stop")
+            try:
+                await worker.run()
+            except asyncio.CancelledError:
+                self.logger.info("🛑 Received cancellation signal")
+            except KeyboardInterrupt:
+                self.logger.info("⏹️ Received interrupt signal")
 
 
-async def main():
-    async with worker_lifecycle() as message_worker:
-        await message_worker.run()
+def main():
+    app = WorkerConsoleApp()
+
+    try:
+        asyncio.run(app.run())
+    except KeyboardInterrupt:
+        print("\n👋 Graceful shutdown by user")
+    except Exception as e:
+        print(f"💥 Fatal error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
