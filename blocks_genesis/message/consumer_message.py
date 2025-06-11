@@ -1,11 +1,10 @@
 from dataclasses import dataclass
-from typing import Generic, TypeVar, Optional
-
-T = TypeVar('T')
+from typing import Any, Optional
 
 @dataclass
-class ConsumerMessage(Generic[T]):
+class ConsumerMessage:
     consumer_name: str
-    payload: T
+    payload: Any  
     context: Optional[str] = None
     routing_key: str = ""
+

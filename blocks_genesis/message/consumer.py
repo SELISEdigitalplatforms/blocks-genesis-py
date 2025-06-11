@@ -1,4 +1,4 @@
-from event_registry import get_event_handler
+from blocks_genesis.message.event_registry import get_event_handler
 
 class Consumer:
     async def process_message(self, type: str, body: dict):

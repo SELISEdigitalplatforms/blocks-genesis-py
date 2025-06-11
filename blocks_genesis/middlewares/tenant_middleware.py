@@ -28,9 +28,9 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
 
         if not self._is_valid_origin_or_referer(request, tenant):
             return self._reject(406, "NotAcceptable: Invalid_Origin_Or_Referer")
+        
 
-        # Set baggage for propagation across service calls
-        Activity.set_baggage_item("TenantId", tenant.tenant_id, context=BlocksContextManager.get_current())
+        Activity.set_baggage_item("TenantId", tenant.tenant_id)
         print(f"TenantId set in baggage: {tenant.tenant_id}")
         # Construct and set BlocksContext
         ctx = BlocksContextManager.create(

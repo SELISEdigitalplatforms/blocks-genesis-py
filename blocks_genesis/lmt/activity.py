@@ -15,7 +15,8 @@ class Activity:
     def __init__(self, name: str):
         self._context = get_current()
         self._span = _tracer.start_span(name, context=self._context)
-        self._token = attach(trace.set_span_in_context(self._span, self._context))
+        self._span_context = trace.set_span_in_context(self._span, self._context)
+        self._token = attach(self._span_context)
 
     def set_property(self, key: str, value):
         if self._span.is_recording():
@@ -41,14 +42,23 @@ class Activity:
         self._span.set_status(Status(status_code, description))
 
     def set_baggage(self, key: str, value: str):
-        self._context = baggage.set_baggage(key, value, context=self._context)
+        # Update both instance context and span context for proper propagation
+        self._context = baggage.set_baggage(key, value, context=self._span_context)
+        self._span_context = self._context
+        detach(self._token)
+        self._token = attach(self._span_context)
 
     def set_baggage_items(self, items: dict):
+        context = self._span_context
         for k, v in items.items():
-            self._context = baggage.set_baggage(k, v, context=self._context)
+            context = baggage.set_baggage(k, v, context=context)
+        self._context = context
+        self._span_context = context
+        detach(self._token)
+        self._token = attach(self._span_context)
 
     def get_baggage(self, key: str):
-        return baggage.get_baggage(key, context=self._context)
+        return baggage.get_baggage(key, context=self._span_context)
 
     def stop(self):
         self._span.end()
@@ -80,7 +90,6 @@ class Activity:
     def get_span_id() -> str:
         span = Activity.current()
         return format(span.get_span_context().span_id, "016x") if span else ""
-
 
     @staticmethod
     def set_current_property(key: str, value):
@@ -114,15 +123,18 @@ class Activity:
     @staticmethod
     def set_baggage_item(key: str, value: str):
         ctx = get_current()
-        n_ctx = baggage.set_baggage(key, value, context=ctx)
-        attach(n_ctx)
+        new_ctx = baggage.set_baggage(key, value, context=ctx)
+        token = attach(new_ctx)
+        # Store token for cleanup if needed
+        return token
 
     @staticmethod
     def set_baggage_items_global(items: dict):
         ctx = get_current()
         for k, v in items.items():
-            n_ctx = baggage.set_baggage(k, v, context=ctx)
-        attach(n_ctx)
+            ctx = baggage.set_baggage(k, v, context=ctx)
+        token = attach(ctx)
+        return token
         
     @staticmethod
     def get_baggage_item(key: str) -> str | None:

@@ -26,16 +26,27 @@ class TenantService:
         self._update_channel = "tenant::updates"
         self._collection_name = "Tenants"
 
+        self._initialized = False
+        self._initialize_lock = asyncio.Lock()
+
     async def initialize(self):
         """Explicit initializer for async setup"""
-        await self._load_tenants()
-        asyncio.create_task(self._subscribe_to_updates())
+        async with self._initialize_lock:
+            if self._initialized:
+                return
+
+            await self._load_tenants()
+            asyncio.create_task(self._subscribe_to_updates())
+            self._initialized = True
+            _logger.info("TenantService initialized successfully")
 
     async def get_tenant(self, tenant_id: str) -> Optional[Tenant]:
         if not tenant_id:
             return None
-        if tenant_id in self._tenant_cache:
-            return self._tenant_cache[tenant_id]
+
+        tenant = self._tenant_cache.get(tenant_id)
+        if tenant:
+            return tenant
 
         tenant = await self._load_tenant_from_db(tenant_id)
         if tenant:
@@ -57,7 +68,7 @@ class TenantService:
                 self._tenant_cache[tenant.tenant_id] = tenant
                 return tenant
         except Exception as e:
-            _logger.error(f"Error getting tenant by domain {domain}: {e}")
+            _logger.exception(f"Error getting tenant by domain {domain}: {e}")
         return None
 
     async def get_db_connection(self, tenant_id: str) -> Tuple[Optional[str], Optional[str]]:
@@ -75,7 +86,7 @@ class TenantService:
                 self._tenant_cache[tenant.tenant_id] = tenant
             _logger.info(f"Loaded {len(self._tenant_cache)} tenants into cache")
         except Exception as e:
-            _logger.error(f"Failed to load tenants: {e}")
+            _logger.exception(f"Failed to load tenants: {e}")
 
     async def _load_tenant_from_db(self, tenant_id: str) -> Optional[Tenant]:
         try:
@@ -88,7 +99,7 @@ class TenantService:
             if tenant_dict:
                 return Tenant(**tenant_dict)
         except Exception as e:
-            _logger.error(f"Error loading tenant {tenant_id}: {e}")
+            _logger.exception(f"Error loading tenant {tenant_id}: {e}")
         return None
 
     async def _subscribe_to_updates(self):
@@ -99,26 +110,27 @@ class TenantService:
             )
             _logger.info("Subscribed to tenant updates")
         except Exception as e:
-            _logger.error(f"Failed to subscribe to updates: {e}")
+            _logger.exception(f"Failed to subscribe to updates: {e}")
 
     async def _handle_update(self, channel: str, message: str):
         try:
             _logger.info(f"Received tenant update: {message}")
             await self._load_tenants()
         except Exception as e:
-            _logger.error(f"Error handling update: {e}")
+            _logger.exception(f"Error handling update: {e}")
 
 
-# Global tenant service instance
+# Global tenant service singleton instance
 _tenant_service: Optional[TenantService] = None
 
 def get_tenant_service() -> TenantService:
     if _tenant_service is None:
-        raise RuntimeError("Tenant service not initialized")
+        raise RuntimeError("TenantService not initialized. Call initialize_tenant_service() first.")
     return _tenant_service
 
 async def initialize_tenant_service() -> TenantService:
     global _tenant_service
-    _tenant_service = TenantService()
+    if _tenant_service is None:
+        _tenant_service = TenantService()
     await _tenant_service.initialize()
     return _tenant_service
