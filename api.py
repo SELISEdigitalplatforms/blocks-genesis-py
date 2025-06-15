@@ -3,6 +3,7 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from blocks_genesis.auth.auth import authorize
 from blocks_genesis.core.secret_loader import SecretLoader, get_blocks_secret
 from blocks_genesis.cache.cache_provider import CacheProvider
 from blocks_genesis.cache.redis_client import RedisClient
@@ -67,9 +68,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan, debug=True)
 
 # Add middleware in order
+app.add_middleware(GlobalExceptionHandlerMiddleware)
 app.add_middleware(TraceContextMiddleware)
 app.add_middleware(TenantValidationMiddleware)
-app.add_middleware(GlobalExceptionHandlerMiddleware)
+
 
 FastAPIInstrumentor.instrument_app(app)  ### Instrument FastAPI for OpenTelemetry
 
@@ -85,13 +87,15 @@ async def root():
     return {"message": "Hello World", "secrets_loaded": True}
 
 
-@app.get("/health")
+
+@app.get("/health", dependencies=[authorize(bypass_authorization=True)])
 async def health():
     return {
         "status": "healthy",
         "secrets_status": "loaded" ,
     }
     
+  
     
     
 @dataclass

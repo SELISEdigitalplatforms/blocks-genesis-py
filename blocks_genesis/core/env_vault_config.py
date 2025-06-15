@@ -10,9 +10,9 @@ class EnvVaultConfig:
         # Get all environment variables
         all_env = dict(os.environ)
         
-        # Print all environment variables
-        for key, value in all_env.items():
-            print(f"{key}={value}")
+        # # Print all environment variables
+        # for key, value in all_env.items():
+        #     print(f"{key}={value}")
         
         if keys:
             config = {key: os.environ.get(key) for key in keys}
