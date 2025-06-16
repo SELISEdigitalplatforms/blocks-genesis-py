@@ -3,7 +3,7 @@ from fastapi import FastAPI, logger
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from blocks_genesis.cache.cache_provider import CacheProvider
 from blocks_genesis.cache.redis_client import RedisClient
-from blocks_genesis.core.secret_loader import SecretLoader
+from blocks_genesis.core.secret_loader import SecretLoader, get_blocks_secret
 from blocks_genesis.database.db_context import DbContext
 from blocks_genesis.database.mongo_context import MongoDbContextProvider
 from blocks_genesis.lmt.log_config import configure_logger
@@ -36,7 +36,7 @@ async def configure_lifespan(name: str):
     DbContext.set_provider(MongoDbContextProvider())
     
     message_config = MessageConfiguration(
-        connection=secret_loader.get_blocks_secret().MessageConnectionString,
+        connection=get_blocks_secret().MessageConnectionString,
         azure_service_bus_configuration=AzureServiceBusConfiguration(
             queues=["ai_queue"],
             topics=[]
