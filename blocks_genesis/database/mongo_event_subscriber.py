@@ -2,6 +2,7 @@ from datetime import datetime
 from pymongo.monitoring import CommandListener
 from opentelemetry.trace import StatusCode
 
+from blocks_genesis.auth.blocks_context import BlocksContextManager
 from blocks_genesis.lmt.activity import Activity
 
 
@@ -16,6 +17,7 @@ class MongoEventSubscriber(CommandListener):
             "db.operation": event.command_name,
             "db.request_id": str(event.request_id),
             "db.timestamp": datetime.now().isoformat(),
+            "baggage.TenantId": BlocksContextManager.get_context().tenant_id if BlocksContextManager.get_context() else "miscellaneous"
         })
 
         self._activities[event.request_id] = activity

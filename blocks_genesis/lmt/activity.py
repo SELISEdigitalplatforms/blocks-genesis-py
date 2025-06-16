@@ -1,4 +1,4 @@
-from typing import Mapping
+from typing import Dict, Mapping, Optional
 from opentelemetry import trace, baggage
 from opentelemetry.trace import (
     get_current_span,
@@ -14,9 +14,42 @@ _tracer = trace.get_tracer("blocks.activity")
 class Activity:
     def __init__(self, name: str):
         self._context = get_current()
+        self._parent_span = get_current_span()
+        self._root_attributes = self._find_root_attributes(self._parent_span)
+
         self._span = _tracer.start_span(name, context=self._context)
+
+        if self._span.is_recording() and self._root_attributes:
+            for k, v in self._root_attributes.items():
+                self._span.set_attribute(f"baggage.{k}", v)
+
         self._span_context = trace.set_span_in_context(self._span, self._context)
         self._token = attach(self._span_context)
+        
+    def _find_root_attributes(self, span: Optional[Span]) -> Dict[str, object]:
+        """Find root attributes in the span or its parent."""
+        if span is None or not hasattr(span, 'attributes'):
+            return {}
+
+        root_attrs = {}
+        for k, v in span.attributes.items():
+            if k.startswith("baggage."):
+                root_attrs[k[8:]] = v
+
+        if root_attrs:
+            return root_attrs
+
+        return dict(span.attributes)
+
+    def get_root_attribute(self, key: str) -> Optional[object]:
+        """Get a single attribute from the root span attributes."""
+        if self._root_attributes and key in self._root_attributes:
+            return self._root_attributes[key]
+        return None
+
+    def get_all_root_attributes(self) -> Dict[str, object]:
+        """Get all attributes from the root span."""
+        return self._root_attributes or {}
 
     def set_property(self, key: str, value):
         if self._span.is_recording():
@@ -27,38 +60,8 @@ class Activity:
             for k, v in props.items():
                 self._span.set_attribute(k, v)
 
-    def add_event(self, name: str, attributes: dict = None):
-        if self._span.is_recording():
-            self._span.add_event(name, attributes or {})
-
-    def add_events(self, events: list[dict]):
-        for event in events:
-            name = event.get("name")
-            attrs = event.get("attributes", {})
-            if name:
-                self.add_event(name, attrs)
-
     def set_status(self, status_code: StatusCode, description: str = ""):
         self._span.set_status(Status(status_code, description))
-
-    def set_baggage(self, key: str, value: str):
-        # Update both instance context and span context for proper propagation
-        self._context = baggage.set_baggage(key, value, context=self._span_context)
-        self._span_context = self._context
-        detach(self._token)
-        self._token = attach(self._span_context)
-
-    def set_baggage_items(self, items: dict):
-        context = self._span_context
-        for k, v in items.items():
-            context = baggage.set_baggage(k, v, context=context)
-        self._context = context
-        self._span_context = context
-        detach(self._token)
-        self._token = attach(self._span_context)
-
-    def get_baggage(self, key: str):
-        return baggage.get_baggage(key, context=self._span_context)
 
     def stop(self):
         self._span.end()
@@ -103,43 +106,3 @@ class Activity:
         if span and span.is_recording():
             for k, v in props.items():
                 span.set_attribute(k, v)
-
-    @staticmethod
-    def add_current_event(name: str, attributes: dict = None):
-        span = Activity.current()
-        if span and span.is_recording():
-            span.add_event(name, attributes or {})
-
-    @staticmethod
-    def add_current_events(events: list[dict]):
-        span = Activity.current()
-        if span and span.is_recording():
-            for event in events:
-                name = event.get("name")
-                attrs = event.get("attributes", {})
-                if name:
-                    span.add_event(name, attrs)
-
-    @staticmethod
-    def set_baggage_item(key: str, value: str):
-        ctx = get_current()
-        new_ctx = baggage.set_baggage(key, value, context=ctx)
-        token = attach(new_ctx)
-        # Store token for cleanup if needed
-        return token
-
-    @staticmethod
-    def set_baggage_items_global(items: dict):
-        ctx = get_current()
-        for k, v in items.items():
-            ctx = baggage.set_baggage(k, v, context=ctx)
-        token = attach(ctx)
-        return token
-        
-    @staticmethod
-    def get_baggage_item(key: str) -> str | None:
-        return baggage.get_baggage(key, context=get_current())
-    
-    @staticmethod
-    def get_baggages() -> Mapping[str, object]:
-        return baggage.get_all(context=get_current())

@@ -103,11 +103,6 @@ class AzureMessageWorker:
         if security_context_raw:
             BlocksContext.set_context(json.loads(security_context_raw))
 
-        baggages = json.loads(baggage_str)
-        for key, value in baggages.items():
-            baggage.set_baggage(key, value)
-        baggage.set_baggage("TenantId", tenant_id)
-
         cancellation_event = asyncio.Event()
         self._active_message_renewals[message_id] = cancellation_event
         asyncio.create_task(self.start_auto_renewal_task(message, receiver, cancellation_event))
@@ -126,6 +121,9 @@ class AzureMessageWorker:
                 span.set_attribute("message.id", message_id)
                 span.set_attribute("SecurityContext", security_context_raw)
                 span.set_attribute("message.body", str(message))
+                baggages = json.loads(baggage_str)
+                for key, value in baggages.items():
+                    span.set_attribute(f"baggage.{key}", value)
 
                 try:
                     start_time = asyncio.get_event_loop().time()

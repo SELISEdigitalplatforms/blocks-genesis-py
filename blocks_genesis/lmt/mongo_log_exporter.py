@@ -4,6 +4,7 @@ from datetime import datetime
 from queue import Queue, Empty
 from pymongo import MongoClient, ASCENDING, DESCENDING
 
+from blocks_genesis.auth.blocks_context import BlocksContextManager
 from blocks_genesis.core.secret_loader import get_blocks_secret
 from blocks_genesis.lmt.activity import Activity
 
@@ -96,7 +97,7 @@ class MongoHandler(logging.Handler):
 class TraceContextFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         """Add trace context to log records."""
-        record.TenantId = Activity.get_baggage_item("TenantId") or "miscellaneous"
+        record.TenantId = BlocksContextManager.get_context().tenant_id if BlocksContextManager.get_context() else "miscellaneous"
         print(f"[TraceContextFilter] TenantId: {record.TenantId}")
         record.TraceId = Activity.get_trace_id()
         record.SpanId = Activity.get_span_id()

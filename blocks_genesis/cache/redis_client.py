@@ -5,6 +5,7 @@ import redis
 import redis.asyncio as aioredis
 from opentelemetry.trace import StatusCode
 
+from blocks_genesis.auth.blocks_context import BlocksContextManager
 from blocks_genesis.cache.CacheClient import CacheClient
 from blocks_genesis.core.secret_loader import get_blocks_secret
 from blocks_genesis.lmt.activity import Activity
@@ -75,6 +76,7 @@ class RedisClient(CacheClient):
         activity = Activity.start(f"Redis::{operation}")
         activity.set_property("key", key)
         activity.set_property("operation", operation)
+        activity.set_property("baggage.TenantId", BlocksContextManager.get_context().tenant_id if BlocksContextManager.get_context() else "miscellaneous")
         return activity
     
     # Synchronous Methods

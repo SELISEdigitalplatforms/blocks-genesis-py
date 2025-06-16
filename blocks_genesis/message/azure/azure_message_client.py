@@ -70,6 +70,7 @@ class AzureMessageClient(MessageClient):
                 self._senders[name] = self._client.get_topic_sender(topic_name=name)
             return self._senders[name]
 
+
     async def _send_to_azure_bus_async(self, consumer_message: ConsumerMessage, is_topic: bool = False):
         security_context = BlocksContextManager.get_context()
 
@@ -79,7 +80,8 @@ class AzureMessageClient(MessageClient):
                 "messaging.destination": consumer_message.consumer_name,
                 "messaging.destination_kind": "topic" if is_topic else "queue",
                 "messaging.operation": "send",
-                "messaging.message_type": type(consumer_message.payload).__name__
+                "messaging.message_type": type(consumer_message.payload).__name__,
+                "baggage.TenantId": BlocksContextManager.get_context().tenant_id
             })
 
             sender = await self._get_sender(consumer_message.consumer_name)
@@ -95,13 +97,13 @@ class AzureMessageClient(MessageClient):
                 body=json.dumps(message_body.__dict__),
                 application_properties={
                     "TenantId": security_context.tenant_id if security_context else None,
-                    "TraceId": Activity.get_trace_id(),
-                    "SpanId": Activity.get_span_id(),
+                    "TraceId": activity.get_trace_id(),
+                    "SpanId": activity.get_span_id(),
                     "SecurityContext": consumer_message.context or json.dumps(
                         security_context.__dict__ if security_context else {}, 
                         cls=DateTimeEncoder
                     ),
-                    "Baggage": json.dumps(dict(Activity.get_baggages()))
+                    "Baggage": json.dumps(activity.get_all_root_attributes())
                 }
             )
 
