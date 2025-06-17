@@ -131,16 +131,10 @@ The library automatically loads secrets from Azure Key Vault. Ensure your Key Va
 
 3. **Install dependencies**
    ```bash
-   uv pip install -r requirements.txt
+   uv sync
    ```
 
-4. **Configure environment**
-   ```bash
-   cp .env.example .env
-   # Edit .env with your configuration
-   ```
-
-5. **Run the application**
+4. **Run the application**
    ```bash
    # API Server
    uvicorn api:app --reload

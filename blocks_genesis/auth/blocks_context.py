@@ -146,7 +146,7 @@ class BlocksContextManager:
             return None
     
     @staticmethod
-    def set_context(context: Optional[BlocksContext], change_context: bool = True) -> None:
+    def set_context(context: Optional[BlocksContext]) -> None:
         """Set the context in ContextVar storage"""
         _context_var.set(context)
     
