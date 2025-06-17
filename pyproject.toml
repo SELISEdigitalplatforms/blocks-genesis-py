@@ -1,17 +1,8 @@
 [project]
 name = "seliseblocks-genesis"
-version = "0.1.1"
+version = "0.1.3"
 description = "Reusable FastAPI utilities like middlewares, singletons, and more for Selise Blocks and Selise Genesis projects."
 authors = [{name="Selise Blocks", email="mostafizur.rahman@selisegroup.com"}]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-]
 keywords = ["Selise", "Selise Blocks", "Selise genesis", "Blocks genesis", "FastAPI", "Middlewares", "Singletons"]
 dependencies = [
     "fastapi>=0.68.0",
