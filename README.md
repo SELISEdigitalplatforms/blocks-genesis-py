@@ -79,34 +79,17 @@ Create a `.env` file in your project root:
 
 ```env
 # Azure Configuration
-AZURE_CLIENT_ID=your_client_id
-AZURE_CLIENT_SECRET=your_client_secret
-AZURE_TENANT_ID=your_tenant_id
-AZURE_KEY_VAULT_URL=https://your-keyvault.vault.azure.net/
-
-# Service Bus
-AZURE_SERVICE_BUS_CONNECTION_STRING=your_connection_string
-
-# Redis (Optional)
-REDIS_URL=redis://localhost:6379
-
-# MongoDB (Optional)
-MONGODB_URL=mongodb://localhost:27017
+KEYVAULT__CLIENTID=your_client_id
+KEYVAULT__CLIENTSECRET=your_client_secret
+KEYVAULT__TENANTID=your_tenant_id
+KEYVAULT__KEYVAULTURL=https://your-keyvault.vault.azure.net/
 ```
-
-### Key Vault Secrets
-
-The library automatically loads secrets from Azure Key Vault. Ensure your Key Vault contains:
-
-- Database connection strings
-- API keys
-- Other sensitive configuration
 
 ## 🛠️ Development Setup
 
 ### Prerequisites
 
-- Python 3.8+
+- Python 3.9+
 - Azure CLI (for local development)
 - Docker (optional)
 
