@@ -4,16 +4,13 @@ import logging
 
 from blocks_genesis.cache.cache_provider import CacheProvider
 from blocks_genesis.cache.redis_client import RedisClient
-from blocks_genesis.core.secret_loader import SecretLoader, get_blocks_secret
+from blocks_genesis.core.secret_loader import SecretLoader
 from blocks_genesis.database.db_context import DbContext
 from blocks_genesis.database.mongo_context import MongoDbContextProvider
 from blocks_genesis.message.azure.azure_message_client import AzureMessageClient
 from blocks_genesis.message.azure.azure_message_worker import AzureMessageWorker
 from blocks_genesis.message.azure.config_azure_service_bus import ConfigAzureServiceBus
-from blocks_genesis.message.message_configuration import (
-    AzureServiceBusConfiguration,
-    MessageConfiguration,
-)
+from blocks_genesis.message.message_configuration import MessageConfiguration
 from blocks_genesis.lmt.log_config import configure_logger
 from blocks_genesis.lmt.mongo_log_exporter import MongoHandler
 from blocks_genesis.lmt.tracing import configure_tracing
@@ -22,10 +19,11 @@ from blocks_genesis.tenant.tenant_service import initialize_tenant_service
 
 
 class WorkerConsoleApp:
-    def __init__(self, name: str):
+    def __init__(self, name: str, message_config: MessageConfiguration):
         self.message_worker: AzureMessageWorker = None
         self.name = name
         self.logger = logging.getLogger(__name__)
+        self.message_config = message_config
 
     @asynccontextmanager
     async def setup_services(self):
@@ -47,18 +45,12 @@ class WorkerConsoleApp:
             DbContext.set_provider(MongoDbContextProvider())
             self.logger.info("✅ Cache, TenantService, and Mongo Context initialized")
 
-            message_config = MessageConfiguration(
-                connection=get_blocks_secret().MessageConnectionString,
-                azure_service_bus_configuration=AzureServiceBusConfiguration(
-                    queues=["ai_queue", "ai_queue_2nd"],
-                    topics=[]
-                )
-            )
+            
 
-            ConfigAzureServiceBus().configure_queue_and_topic(message_config)
-            AzureMessageClient.initialize(message_config)
+            ConfigAzureServiceBus().configure_queue_and_topic(self.message_config)
+            AzureMessageClient.initialize(self.message_config)
 
-            self.message_worker = AzureMessageWorker(message_config)
+            self.message_worker = AzureMessageWorker(self.message_config)
             self.message_worker.initialize()
 
             self.logger.info("✅ Azure Message Worker initialized and ready")

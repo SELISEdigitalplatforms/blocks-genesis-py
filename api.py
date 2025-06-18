@@ -1,21 +1,35 @@
 from dataclasses import dataclass
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI
 from blocks_genesis.auth.auth import authorize
 from blocks_genesis.core.api import close_lifespan, configure_lifespan, configure_middlewares
+from blocks_genesis.core.configuration import get_configurations, load_configurations
+from blocks_genesis.core.secret_loader import get_blocks_secret
 from blocks_genesis.database.db_context import DbContext
 from blocks_genesis.message.azure.azure_message_client import AzureMessageClient
 from blocks_genesis.message.consumer_message import ConsumerMessage
+from blocks_genesis.message.message_configuration import AzureServiceBusConfiguration, MessageConfiguration
 
 
 
 logger = logging.getLogger(__name__)
+message_config = MessageConfiguration(
+    azure_service_bus_configuration=AzureServiceBusConfiguration(
+        queues=["ai_queue"],
+        topics=[]
+    )
+)
 
+config_dir = Path(__file__).resolve().parent / "config"
+print(config_dir)
+load_configurations(config_dir)
+config = get_configurations()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await configure_lifespan("blocks_ai_api")
+    await configure_lifespan("blocks_ai_api", message_config)
     logger.info("✅ All services initialized!")
 
     yield  # app running here
@@ -28,7 +42,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan, debug=True)
 
 # Add middleware in order
-configure_middlewares(app);
+configure_middlewares(app, config["is_local"]);
 
 
 

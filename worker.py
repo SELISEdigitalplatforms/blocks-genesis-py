@@ -2,14 +2,22 @@ import asyncio
 import logging
 import sys
 
+from blocks_genesis.core.secret_loader import get_blocks_secret
 from blocks_genesis.core.worker import WorkerConsoleApp
+from blocks_genesis.message.message_configuration import AzureServiceBusConfiguration, MessageConfiguration
 
 
 logger = logging.getLogger(__name__)
+message_config = MessageConfiguration(
+    azure_service_bus_configuration=AzureServiceBusConfiguration(
+        queues=["ai_queue", "ai_queue_2nd"],
+        topics=[]
+    )
+)
 
 
 def main():
-    app = WorkerConsoleApp("blocks_ai_worker")
+    app = WorkerConsoleApp("blocks_ai_worker", message_config)
 
     try:
         asyncio.run(app.run())

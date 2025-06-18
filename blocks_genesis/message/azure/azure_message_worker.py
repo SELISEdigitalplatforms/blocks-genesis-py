@@ -8,6 +8,7 @@ from opentelemetry import trace, baggage
 from opentelemetry.trace import Status, StatusCode, SpanKind
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from blocks_genesis.auth.blocks_context import BlocksContext
+from blocks_genesis.core.secret_loader import get_blocks_secret
 from blocks_genesis.message.consumer import Consumer
 from blocks_genesis.message.event_message import EventMessage
 from blocks_genesis.message.message_configuration import MessageConfiguration
@@ -25,10 +26,11 @@ class AzureMessageWorker:
         self._tracer = trace.get_tracer(__name__)
 
     def initialize(self):
-        if not self._message_config.connection:
+        connection = self._message_config.connection or get_blocks_secret().MessageConnectionString
+        if not connection:
             self._logger.error("Connection string missing")
             raise ValueError("Connection string missing")
-        self._service_bus_client = ServiceBusClient.from_connection_string(self._message_config.connection)
+        self._service_bus_client = ServiceBusClient.from_connection_string(connection)
         self._logger.info("✅ Service Bus Client initialized")
 
     async def stop(self):

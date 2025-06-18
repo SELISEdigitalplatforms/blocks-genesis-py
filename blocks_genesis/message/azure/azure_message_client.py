@@ -11,6 +11,7 @@ from azure.servicebus.aio import ServiceBusClient, ServiceBusSender
 from azure.servicebus import ServiceBusMessage
 
 from blocks_genesis.auth.blocks_context import BlocksContextManager
+from blocks_genesis.core.secret_loader import get_blocks_secret
 from blocks_genesis.lmt.activity import Activity
 from blocks_genesis.message.consumer_message import ConsumerMessage
 from blocks_genesis.message.event_message import EventMessage
@@ -31,7 +32,7 @@ class AzureMessageClient(MessageClient):
 
     def __init__(self, message_config: MessageConfiguration):
         self._message_config = message_config
-        self._client = ServiceBusClient.from_connection_string(message_config.connection)
+        self._client = ServiceBusClient.from_connection_string(message_config.connection or get_blocks_secret().MessageConnectionString)
         self._senders: Dict[str, ServiceBusSender] = {}
         self._sender_locks: Dict[str, Lock] = defaultdict(Lock)
         self._initialize_senders()

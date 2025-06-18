@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from typing import Dict, Optional, Tuple
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -60,6 +61,7 @@ class TenantService:
             tenant_dict = await self.database[self._collection_name].find_one({
                 "$or": [
                     {"ApplicationDomain": domain},
+                    {"ApplicationDomain": {"$regex": re.compile(domain)}},
                     {"AllowedDomains": {"$in": [domain]}}
                 ]
             })

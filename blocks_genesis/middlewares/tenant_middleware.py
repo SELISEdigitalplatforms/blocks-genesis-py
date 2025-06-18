@@ -12,6 +12,10 @@ from blocks_genesis.tenant.tenant_service import get_tenant_service
 class TenantValidationMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
+        excluded_paths = ["/docs", "/redoc", "/openapi.json", "/ping"]
+        if request.url.path in excluded_paths:
+            return await call_next(request)
+        
         try:
             Activity.set_current_properties({
                 "http.query": str(dict(request.query_params)),
@@ -24,8 +28,7 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
             tenant_service = get_tenant_service()  # Assuming this function retrieves the tenant service instance
 
             if not api_key:
-                domain = str(request.url.hostname)
-                tenant = await tenant_service.get_tenant_by_domain(domain)
+                tenant = await tenant_service.get_tenant_by_domain(request.base_url.hostname)
                 if not tenant:
                     return self._reject(404, "Not_Found: Application_Not_Found")
             else:
