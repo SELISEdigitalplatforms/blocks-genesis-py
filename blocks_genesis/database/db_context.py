@@ -1,41 +1,20 @@
+from typing import Optional
 from blocks_genesis.database.db_context_provider import DbContextProvider
 
 
 class DbContext:
-    """
-    Singleton class for managing a global DbContextProvider.
-    """
+    _provider: Optional[DbContextProvider] = None
 
-    _provider: DbContextProvider = None
+    @classmethod
+    def set_provider(cls, provider: DbContextProvider) -> None:
+        cls._provider = provider
 
-    @staticmethod
-    def set_provider(provider: DbContextProvider) -> None:
-        """
-        Set the global DB context provider.
-
-        Args:
-            provider: An instance of DbContextProvider to use globally.
-        """
-        DbContext._provider = provider
-
-    @staticmethod
-    def get_provider() -> DbContextProvider:
-        """
-        Get the global DB context provider.
-
-        Returns:
-            The configured DbContextProvider.
-
-        Raises:
-            RuntimeError: If no provider has been set.
-        """
-        if DbContext._provider is None:
+    @classmethod
+    def get_provider(cls) -> DbContextProvider:
+        if cls._provider is None:
             raise RuntimeError("No DbContextProvider registered.")
-        return DbContext._provider
+        return cls._provider
 
-    @staticmethod
-    def clear() -> None:
-        """
-        Clear the global DB context provider.
-        """
-        DbContext._provider = None
+    @classmethod
+    def clear(cls) -> None:
+        cls._provider = None

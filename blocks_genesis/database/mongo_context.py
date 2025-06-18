@@ -6,7 +6,7 @@ from pymongo.database import Database
 from pymongo.monitoring import register
 from contextvars import ContextVar
 
-from blocks_genesis.auth.blocks_context import BlocksContext
+from blocks_genesis.auth.blocks_context import BlocksContext, BlocksContextManager
 from blocks_genesis.database.mongo_event_subscriber import MongoEventSubscriber
 from blocks_genesis.tenant.tenant_service import get_tenant_service
 from blocks_genesis.database.db_context_provider import DbContextProvider
@@ -24,7 +24,7 @@ class MongoDbContextProvider(DbContextProvider):
         register(MongoEventSubscriber())
 
     async def get_database(self, tenant_id: Optional[str] = None) -> Optional[Database]:
-        tenant_id = tenant_id or getattr(BlocksContext.get_context(), 'tenant_id', None)
+        tenant_id = tenant_id or getattr(BlocksContextManager.get_context(), 'tenant_id', None)
         if not tenant_id:
             self._logger.warning("Tenant ID is missing in context")
             return None

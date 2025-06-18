@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from blocks_genesis.auth.auth import authorize
 from blocks_genesis.core.api import close_lifespan, configure_lifespan, configure_middlewares
+from blocks_genesis.database.db_context import DbContext
 from blocks_genesis.message.azure.azure_message_client import AzureMessageClient
 from blocks_genesis.message.consumer_message import ConsumerMessage
 
@@ -42,6 +43,7 @@ async def root():
         consumer_name="ai_queue",
         payload= AiMessage("Hello from AI API!"),
     ))
+    db = DbContext.get_provider()
     return {"message": "Hello World", "secrets_loaded": True}
 
 
