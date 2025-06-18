@@ -1,5 +1,6 @@
 import logging
 from fastapi import FastAPI, logger
+from starlette.middleware.cors import CORSMiddleware
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from blocks_genesis.cache.cache_provider import CacheProvider
 from blocks_genesis.cache.redis_client import RedisClient
@@ -57,3 +58,10 @@ def configure_middlewares(app: FastAPI):
     app.add_middleware(TenantValidationMiddleware)
     app.add_middleware(GlobalExceptionHandlerMiddleware)
     FastAPIInstrumentor.instrument_app(app)  ### Instrument FastAPI for OpenTelemetry
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
