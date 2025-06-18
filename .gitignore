@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+.Python
+env/
+.env
+venv/
+lib/
+include/
+bin/
+share/
+logs/
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
+.nox/
+.tox/
+dist/
+build/
+*.egg-infol
+*.egg
+.mypy_cache/
+.ruff_cache/
+.vscode/
+
+# IDEs
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# OS generated files
+.DS_Store
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# FastAPI specific
+# If you have an sqlite database file
+*.db
+
+# Docker
+# If you are using Docker, you might want to ignore these
+# .dockerignore should handle what goes into the image, but these are for local dev
+# .docker/
+# docker-compose.yml (if you have local-only modifications)
+
+# Environment variables (if you have a .env file outside of your venv)
+.env
+

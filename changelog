@@ -1,0 +1,9 @@
+## 📋 Changelog
+
+### v0.1.0
+- Initial release
+- FastAPI integration utilities
+- Azure Key Vault and Service Bus support
+- Authentication middleware
+- Worker application framework
+- Message queue system
