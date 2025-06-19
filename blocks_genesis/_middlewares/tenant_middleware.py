@@ -72,7 +72,7 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
             })
         
         except Exception as e:
-            Activity.set_status(StatusCode.ERROR, str(e))
+            Activity.set_current_status(StatusCode.ERROR, str(e))
             raise
         finally:
             BlocksContextManager.clear_context()

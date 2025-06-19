@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan, debug=True)
 
 # Add middleware in order
-configure_middlewares(app, config["is_local"]);
+configure_middlewares(app, config["is_local"])
 
 
 

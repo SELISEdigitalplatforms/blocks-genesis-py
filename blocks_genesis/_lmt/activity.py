@@ -61,7 +61,7 @@ class Activity:
                 self._span.set_attribute(k, v)
 
     def set_status(self, status_code: StatusCode, description: str = ""):
-        self._span.set_status(Status(status_code, description))
+        self._span.set_status(status_code, description)
 
     def stop(self):
         self._span.end()
@@ -106,3 +106,10 @@ class Activity:
         if span and span.is_recording():
             for k, v in props.items():
                 span.set_attribute(k, v)
+                
+                
+    @staticmethod
+    def set_current_status(status_code: StatusCode, description: str = ""):
+        span = Activity.current()
+        if span and span.is_recording():
+            span.set_status(status_code, description)

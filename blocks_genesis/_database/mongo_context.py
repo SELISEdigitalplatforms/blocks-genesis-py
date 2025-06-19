@@ -6,10 +6,9 @@ from pymongo.database import Database
 from pymongo.monitoring import register
 from contextvars import ContextVar
 
-from blocks_genesis._auth.blocks_context import BlocksContext, BlocksContextManager
+from blocks_genesis._auth.blocks_context import BlocksContextManager
 from blocks_genesis._database.mongo_event_subscriber import MongoEventSubscriber
 from blocks_genesis._tenant.tenant_service import get_tenant_service
-from blocks_genesis._database.db_context_provider import DbContextProvider
 
 _db_cache: ContextVar[Dict[str, Database]] = ContextVar("_db_cache", default={})
 _client_cache: ContextVar[Dict[str, MongoClient]] = ContextVar("_client_cache", default={})
@@ -17,7 +16,7 @@ _client_cache: ContextVar[Dict[str, MongoClient]] = ContextVar("_client_cache", 
 _logger = logging.getLogger(__name__)
 
 
-class MongoDbContextProvider(DbContextProvider):
+class MongoDbContextProvider:
     def __init__(self):
         self._logger = _logger
         self._tenants = get_tenant_service()

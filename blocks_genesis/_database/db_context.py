@@ -1,18 +1,19 @@
 from typing import Optional
-from blocks_genesis._database.db_context_provider import DbContextProvider
+
+from blocks_genesis._database.mongo_context import MongoDbContextProvider
 
 
 class DbContext:
-    _provider: Optional[DbContextProvider] = None
+    _provider: Optional[MongoDbContextProvider] = None
 
     @classmethod
-    def set_provider(cls, provider: DbContextProvider) -> None:
+    def set_provider(cls, provider: MongoDbContextProvider) -> None:
         cls._provider = provider
 
     @classmethod
-    def get_provider(cls) -> DbContextProvider:
+    def get_provider(cls) -> MongoDbContextProvider:
         if cls._provider is None:
-            raise RuntimeError("No DbContextProvider registered.")
+            raise RuntimeError("No MongoDbContextProvider registered.")
         return cls._provider
 
     @classmethod

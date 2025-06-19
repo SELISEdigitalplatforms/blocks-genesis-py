@@ -49,7 +49,7 @@ async def close_lifespan():
     if hasattr(MongoHandler, '_mongo_logger') and MongoHandler._mongo_logger:
         MongoHandler._mongo_logger.stop()
         
-def configure_middlewares(app: FastAPI, is_local: False):
+def configure_middlewares(app: FastAPI, is_local: bool = False):
     if not is_local:
         app.add_middleware(HTTPSRedirectMiddleware)
         
