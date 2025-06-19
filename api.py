@@ -3,14 +3,13 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
-from blocks_genesis.auth.auth import authorize
-from blocks_genesis.core.api import close_lifespan, configure_lifespan, configure_middlewares
-from blocks_genesis.core.configuration import get_configurations, load_configurations
-from blocks_genesis.core.secret_loader import get_blocks_secret
-from blocks_genesis.database.db_context import DbContext
-from blocks_genesis.message.azure.azure_message_client import AzureMessageClient
-from blocks_genesis.message.consumer_message import ConsumerMessage
-from blocks_genesis.message.message_configuration import AzureServiceBusConfiguration, MessageConfiguration
+from blocks_genesis._auth.auth import authorize
+from blocks_genesis._core.api import close_lifespan, configure_lifespan, configure_middlewares
+from blocks_genesis._core.configuration import get_configurations, load_configurations
+from blocks_genesis._database.db_context import DbContext
+from blocks_genesis._message.azure.azure_message_client import AzureMessageClient
+from blocks_genesis._message.consumer_message import ConsumerMessage
+from blocks_genesis._message.message_configuration import AzureServiceBusConfiguration, MessageConfiguration
 
 
 

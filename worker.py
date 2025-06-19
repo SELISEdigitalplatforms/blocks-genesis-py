@@ -2,9 +2,8 @@ import asyncio
 import logging
 import sys
 
-from blocks_genesis.core.secret_loader import get_blocks_secret
-from blocks_genesis.core.worker import WorkerConsoleApp
-from blocks_genesis.message.message_configuration import AzureServiceBusConfiguration, MessageConfiguration
+from blocks_genesis._core.worker import WorkerConsoleApp
+from blocks_genesis._message.message_configuration import AzureServiceBusConfiguration, MessageConfiguration
 
 
 logger = logging.getLogger(__name__)
