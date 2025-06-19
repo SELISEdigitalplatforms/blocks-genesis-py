@@ -78,7 +78,7 @@ class MongoDbContextProvider:
 
     async def get_collection(self, collection_name: str, tenant_id: Optional[str] = None) -> Collection:
         db = await self.get_database(tenant_id)
-        if not db:
+        if db is None:
             raise RuntimeError("No database found for tenant")
         return db[collection_name]
 
