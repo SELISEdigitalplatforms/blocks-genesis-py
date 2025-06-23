@@ -125,6 +125,10 @@ KEYVAULT__KEYVAULTURL=https://your-keyvault.vault.azure.net/
    # Worker
    python worker.py
    ```
+5. **.env setup**
+   ```bash
+   APP_ENV=dev
+   ```
 
 ## 📚 Components Overview
 
