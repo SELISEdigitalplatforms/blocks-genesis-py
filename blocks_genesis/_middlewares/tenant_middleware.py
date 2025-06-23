@@ -42,6 +42,7 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
             
 
             Activity.set_current_property("baggage.TenantId", tenant.tenant_id)
+            Activity.set_current_property("baggage.IsFromCloud", "true" if tenant.is_root_tenant else "false")
             print(f"TenantId set in baggage: {tenant.tenant_id}")
             # Construct and set BlocksContext
             ctx = BlocksContextManager.create(

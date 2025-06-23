@@ -14,6 +14,7 @@ from blocks_genesis._auth.blocks_context import BlocksContext, BlocksContextMana
 from blocks_genesis._cache import CacheClient
 from blocks_genesis._cache.cache_provider import CacheProvider
 from blocks_genesis._database.db_context import DbContext
+from blocks_genesis._lmt.activity import Activity
 from blocks_genesis._tenant.tenant import Tenant
 from blocks_genesis._tenant.tenant_service import TenantService, get_tenant_service
 
@@ -104,7 +105,11 @@ async def authenticate(request: Request, tenant_service: TenantService, cache_cl
         extended_payload[BlocksContext.REQUEST_URI_CLAIM] = str(request.url)
         extended_payload[BlocksContext.TOKEN_CLAIM] = token
 
-        BlocksContextManager.create_from_jwt_claims(extended_payload)
+        blocks_context = BlocksContextManager.create_from_jwt_claims(extended_payload)
+        BlocksContextManager.set_context(blocks_context)
+        Activity.set_current_property("baggage.UserId", blocks_context.user_id)
+        Activity.set_current_property("baggage.IsAuthenticate", "true")
+        
         return extended_payload
     except InvalidTokenError as e:
         print(f"JWT verification failed: {e}")
