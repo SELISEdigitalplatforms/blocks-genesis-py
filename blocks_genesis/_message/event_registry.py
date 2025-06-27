@@ -1,15 +1,35 @@
-# event_registry.py
+from typing import Callable, Any, Type, Dict, Union
 
-_event_handlers = {}
+class EventRegistry:
+    """
+    Registry for event handlers, allowing registration and retrieval by event type.
+    """
+    _handlers: Dict[str, Union[Callable[..., Any], Type[Any]]] = {}
 
-def register_event_handler(event_type: str):
-    def wrapper(cls_or_func):
-        _event_handlers[event_type] = cls_or_func
-        return cls_or_func
-    return wrapper
+    @classmethod
+    def register(cls, event_type: str):
+        """
+        Decorator to register a handler for a given event type.
+        """
+        if not isinstance(event_type, str) or not event_type:
+            raise ValueError("event_type must be a non-empty string.")
 
-def get_event_handler(event_type: str):
-    handler = _event_handlers.get(event_type)
-    if not handler:
-        raise ValueError(f"No handler registered for event type: {event_type}")
-    return handler
+        def decorator(handler: Union[Callable[..., Any], Type[Any]]):
+            if event_type in cls._handlers:
+                raise KeyError(f"Handler already registered for event type: {event_type}")
+            cls._handlers[event_type] = handler
+            return handler
+        return decorator
+
+    @classmethod
+    def get(cls, event_type: str) -> Union[Callable[..., Any], Type[Any]]:
+        """
+        Retrieve the handler registered for the given event type.
+        """
+        if event_type not in cls._handlers:
+            raise ValueError(f"No handler registered for event type: {event_type}")
+        return cls._handlers[event_type]
+
+# Aliases for convenience
+register_consumer = EventRegistry.register
+get_event_handler = EventRegistry.get

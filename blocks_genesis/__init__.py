@@ -16,6 +16,7 @@ from blocks_genesis._utilities.crypto_service import CryptoService
 from blocks_genesis._auth.auth import authorize
 from blocks_genesis._message.message_configuration import AzureServiceBusConfiguration, MessageConfiguration
 from blocks_genesis._core.change_context import change_context
+from blocks_genesis._message.event_registry import register_consumer
 
 __all__ = [
     "BlocksContext",
@@ -41,5 +42,6 @@ __all__ = [
     "CryptoService",
     "AzureServiceBusConfiguration",
     "authorize",
-    "change_context"
+    "change_context",
+    "register_consumer"
 ]

@@ -154,12 +154,16 @@ KEYVAULT__KEYVAULTURL=https://your-keyvault.vault.azure.net/
 ### Custom Message Consumers
 
 ```python
-from blocks_genesis.message.consumer_message import ConsumerMessage
+@register_event_handler("user_created")
+def handle_user_created_event(event_data):
+    print(f"Handling user created event: {event_data}")
 
-class CustomConsumer:
-    async def process_message(self, message: ConsumerMessage):
-        # Your message processing logic
-        print(f"Processing: {message.payload}")
+
+@register_event_handler("user_deleted")
+class UserDeletedHandler:
+    def __call__(self, event_data):
+        print(f"User deleted: {event_data}")
+
 ```
 
 ### Custom Authentication
