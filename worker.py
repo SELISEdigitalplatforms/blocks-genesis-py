@@ -3,7 +3,6 @@ import logging
 import sys
 
 from blocks_genesis._core.worker import WorkerConsoleApp
-from blocks_genesis._message.event_registry import EventRegistry
 from blocks_genesis._message.message_configuration import AzureServiceBusConfiguration, MessageConfiguration
 from test_consumer import handle_user_created_event
 
@@ -12,14 +11,16 @@ from test_consumer import handle_user_created_event
 logger = logging.getLogger(__name__)
 message_config = MessageConfiguration(
     azure_service_bus_configuration=AzureServiceBusConfiguration(
-        queues=["ai_queue", "ai_queue_2nd"],
+        queues=["ai_queue"],
         topics=[]
     )
 )
 
 
 def main(): 
-    app = WorkerConsoleApp("blocks_ai_worker", message_config)
+    app = WorkerConsoleApp("blocks_ai_worker", message_config, {
+        "AiMessage": handle_user_created_event
+    })
     
     try:
         asyncio.run(app.run())

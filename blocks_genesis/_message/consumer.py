@@ -1,13 +1,15 @@
-from blocks_genesis._message.event_registry import get_event_handler
+import json
+from blocks_genesis._message.event_registry import EventRegistry
+
 
 class Consumer:
     async def process_message(self, type: str, body: dict):
-        handler = get_event_handler(type)
+        handler = EventRegistry.resolve(type)
 
         if callable(handler):  # If it’s a function
-            await handler(body)
+            await handler(json.loads(body))
         elif hasattr(handler, "handle"):  # If it's a class with `handle`
             instance = handler()
-            await instance.handle(body)
+            await instance.handle(json.loads(body))
         else:
             raise TypeError(f"Handler for type '{type}' is not callable or doesn't implement `handle()`")

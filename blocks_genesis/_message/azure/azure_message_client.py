@@ -32,7 +32,8 @@ class AzureMessageClient(MessageClient):
 
     def __init__(self, message_config: MessageConfiguration):
         self._message_config = message_config
-        self._client = ServiceBusClient.from_connection_string(message_config.connection or get_blocks_secret().MessageConnectionString)
+        self._message_config.connection = self._message_config.connection or get_blocks_secret().MessageConnectionString
+        self._client = ServiceBusClient.from_connection_string(self._message_config.connection)
         self._senders: Dict[str, ServiceBusSender] = {}
         self._sender_locks: Dict[str, Lock] = defaultdict(Lock)
         self._initialize_senders()

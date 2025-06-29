@@ -22,7 +22,7 @@ class EventRegistry:
         return decorator
 
     @classmethod
-    def get(cls, event_type: str) -> Union[Callable[..., Any], Type[Any]]:
+    def resolve(cls, event_type: str) -> Union[Callable[..., Any], Type[Any]]:
         """
         Retrieve the handler registered for the given event type.
         """
@@ -30,8 +30,3 @@ class EventRegistry:
             raise ValueError(f"No handler registered for event type: {event_type}")
         return cls._handlers[event_type]
 
-# Aliases for convenience
-register_consumer = EventRegistry.register
-get_event_handler = EventRegistry.get
-
-EventRegistry()

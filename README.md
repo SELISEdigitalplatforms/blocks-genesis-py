@@ -154,12 +154,18 @@ KEYVAULT__KEYVAULTURL=https://your-keyvault.vault.azure.net/
 ### Custom Message Consumers
 
 ```python
-@register_event_handler("user_created")
+
+worker/main.py
+EventRegistry.register("Message")(handle_user_created_event)
+
+
+
+
 def handle_user_created_event(event_data):
     print(f"Handling user created event: {event_data}")
 
 
-@register_event_handler("user_deleted")
+
 class UserDeletedHandler:
     def __call__(self, event_data):
         print(f"User deleted: {event_data}")

@@ -1,6 +1,6 @@
 [project]
 name = "seliseblocks-genesis"
-version = "0.1.9"
+version = "0.2.0"
 description = "Reusable FastAPI utilities like middlewares, singletons, and more for Selise Blocks and Selise Genesis projects."
 authors = [{name="Selise Blocks", email="mostafizur.rahman@selisegroup.com"}]
 keywords = ["Selise", "Selise Blocks", "Selise genesis", "Blocks genesis", "FastAPI", "Middlewares", "Singletons"]

@@ -1,5 +1,6 @@
 from typing import Optional
 from azure.servicebus.management import ServiceBusAdministrationClient
+from blocks_genesis._core.secret_loader import get_blocks_secret
 from blocks_genesis._message.message_configuration import MessageConfiguration
 
 
@@ -9,10 +10,6 @@ class ConfigAzureServiceBus:
 
     @classmethod
     def configure_queue_and_topic(cls, message_config: MessageConfiguration):
-        if not message_config.connection:
-            print("Error: Missing Service Bus connection string.")
-            return
-
         try:
             cls._admin_client = ServiceBusAdministrationClient.from_connection_string(message_config.connection)
             cls._message_config = message_config
