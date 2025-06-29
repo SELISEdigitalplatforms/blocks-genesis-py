@@ -33,3 +33,5 @@ class EventRegistry:
 # Aliases for convenience
 register_consumer = EventRegistry.register
 get_event_handler = EventRegistry.get
+
+EventRegistry()

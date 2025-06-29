@@ -1,13 +1,15 @@
 import asyncio
+import collections
 import json
 import logging
+import types
 from typing import Dict, List, Optional
 from azure.servicebus.aio import ServiceBusClient, ServiceBusReceiver
 from azure.servicebus import ServiceBusReceivedMessage
-from opentelemetry import trace, baggage
+from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode, SpanKind
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-from blocks_genesis._auth.blocks_context import BlocksContext
+from blocks_genesis._auth.blocks_context import BlocksContextManager
 from blocks_genesis._core.secret_loader import get_blocks_secret
 from blocks_genesis._message.consumer import Consumer
 from blocks_genesis._message.event_message import EventMessage
@@ -56,16 +58,14 @@ class AzureMessageWorker:
 
         receiver_tasks = []
 
-        # Process queues
         for queue_name in self._message_config.azure_service_bus_configuration.queues:
             receiver = self._service_bus_client.get_queue_receiver(
                 queue_name=queue_name,
                 prefetch_count=self._message_config.azure_service_bus_configuration.queue_prefetch_count
             )
             self._receivers.append(receiver)
-            receiver_tasks.append(self.process_receiver(receiver))
+            receiver_tasks.append(self.safe_receiver_wrapper(receiver, queue_name))
 
-        # Process topics
         for topic_name in self._message_config.azure_service_bus_configuration.topics:
             subscription_name = self._message_config.subscription_name.get(topic_name, "default-subscription")
             receiver = self._service_bus_client.get_subscription_receiver(
@@ -74,47 +74,55 @@ class AzureMessageWorker:
                 prefetch_count=self._message_config.azure_service_bus_configuration.topic_prefetch_count
             )
             self._receivers.append(receiver)
-            receiver_tasks.append(self.process_receiver(receiver))
+            receiver_tasks.append(self.safe_receiver_wrapper(receiver, topic_name))
 
         self._logger.info("🚀 Receivers started")
-        await asyncio.gather(*receiver_tasks)
+        await asyncio.gather(*receiver_tasks, return_exceptions=True)
+
+    async def safe_receiver_wrapper(self, receiver: ServiceBusReceiver, name: str):
+        try:
+            await self.process_receiver(receiver)
+        except Exception as ex:
+            self._logger.error(f"Receiver task for {name} crashed but will be ignored: {ex}")
 
     async def process_receiver(self, receiver: ServiceBusReceiver):
-        try:
-            async with receiver:
-                async for message in receiver:
+        async with receiver:
+            async for message in receiver:
+                try:
                     await self.message_handler(receiver, message)
-        except asyncio.CancelledError:
-            self._logger.info("Receiver cancelled")
-        except Exception as ex:
-            self._logger.error(f"Receiver error: {ex}")
+                except Exception as ex:
+                    self._logger.error(f"❌ Error in message_handler, skipping message: {ex}")
+                    try:
+                        await receiver.abandon_message(message)
+                    except Exception as abandon_ex:
+                        self._logger.warning(f"Failed to abandon message: {abandon_ex}")
+
+    def decode_app_properties(self, properties):
+        if not properties:
+            return {}
+        return {
+            (k.decode("utf-8") if isinstance(k, bytes) else k):
+            (v.decode("utf-8") if isinstance(v, bytes) else v)
+            for k, v in properties.items()
+        }
 
     async def message_handler(self, receiver: ServiceBusReceiver, message: ServiceBusReceivedMessage):
         message_id = message.message_id
-        self._logger.info(f"Received message: {message_id}")
+        self._logger.info(f"📩 Received message: {message_id}")
 
-        # Get properties safely
-        app_props = message.application_properties or {}
+        app_props = self.decode_app_properties(message.application_properties)
         trace_id = app_props.get("TraceId", "")
         span_id = app_props.get("SpanId", "")
         tenant_id = app_props.get("TenantId", "")
         security_context_raw = app_props.get("SecurityContext", "")
         baggage_str = app_props.get("Baggage", "{}")
 
-        # Handle bytes properties
-        if isinstance(trace_id, bytes):
-            trace_id = trace_id.decode("utf-8")
-        if isinstance(span_id, bytes):
-            span_id = span_id.decode("utf-8")
-        if isinstance(tenant_id, bytes):
-            tenant_id = tenant_id.decode("utf-8")
-        if isinstance(security_context_raw, bytes):
-            security_context_raw = security_context_raw.decode("utf-8")
-        if isinstance(baggage_str, bytes):
-            baggage_str = baggage_str.decode("utf-8")
-
         if security_context_raw:
-            BlocksContext.set_context(json.loads(security_context_raw))
+            try:
+                sc = json.loads(security_context_raw)
+                BlocksContextManager.set_context(BlocksContextManager.create(**sc))
+            except Exception as ctx_err:
+                self._logger.warning(f"Invalid security context: {ctx_err}")
 
         cancellation_event = asyncio.Event()
         self._active_message_renewals[message_id] = cancellation_event
@@ -137,45 +145,43 @@ class AzureMessageWorker:
                 span.set_attribute("SecurityContext", security_context_raw)
                 span.set_attribute("message.body", str(message))
                 span.set_attribute("baggage.TenantId", tenant_id)
-                
+
                 try:
                     baggages = json.loads(baggage_str)
                     for key, value in baggages.items():
                         span.set_attribute(f"baggage.{key}", value)
                 except json.JSONDecodeError:
-                    pass
+                    self._logger.warning("Invalid baggage JSON")
 
-                try:
-                    start_time = asyncio.get_event_loop().time()
-                    msg = EventMessage.parse_raw(str(message))
-                    await self._consumer.process_message(msg.type, msg.body)
-                    processing_time = (asyncio.get_event_loop().time() - start_time) * 1000
-                    self._logger.info(f"Processed message {message_id} in {processing_time:.1f}ms")
+                start_time = asyncio.get_event_loop().time()
+                if message.body is None:
+                    d = "{}" 
+                else:
+                    body_bytes = b''.join(message.body) if isinstance(message.body, (types.GeneratorType, collections.abc.Iterable)) else message.body
+                    d = body_bytes.decode('utf-8') if isinstance(body_bytes, (bytes, bytearray)) else str(body_bytes)
+                msg = EventMessage(**json.loads(d))
+                await self._consumer.process_message(msg.type, msg.body)
+                processing_time = (asyncio.get_event_loop().time() - start_time) * 1000
+                self._logger.info(f"✅ Processed message {message_id} in {processing_time:.1f}ms")
 
-                    span.set_attribute("response", "Successfully Completed")
-                    span.set_status(Status(StatusCode.OK, "Message processed successfully"))
-                    
-                    await receiver.complete_message(message)
-                    self._logger.info(f"Message {message_id} completed.")
-                    
-                except Exception as ex:
-                    self._logger.error(f"Error processing message {message_id}: {ex}")
-                    span.set_status(Status(StatusCode.ERROR, str(ex)))
-                    span.set_attribute("error", str(ex))
-                    await receiver.dead_letter_message(message, reason=str(ex))
-                    raise
-                finally:
-                    cancellation_event.set()
-                    self._active_message_renewals.pop(message_id, None)
-                    renewal_task.cancel()
-                    
+                span.set_attribute("response", "Successfully Completed")
+                span.set_status(Status(StatusCode.OK, "Message processed successfully"))
+
+                await receiver.complete_message(message)
+                self._logger.info(f"🗃️ Message {message_id} completed")
+
         except Exception as ex:
-            self._logger.error(f"Unhandled error for message {message_id}: {ex}")
+            self._logger.error(f"💥 Processing failed for message {message_id}: {ex}")
+            try:
+                await receiver.abandon_message(message)
+            except Exception as abandon_ex:
+                self._logger.warning(f"⚠️ Abandon message failed: {abandon_ex}")
+            raise
+        finally:
             cancellation_event.set()
             self._active_message_renewals.pop(message_id, None)
             renewal_task.cancel()
-        finally:
-            BlocksContext.clear_context()
+            BlocksContextManager.clear_context()
 
     async def start_auto_renewal_task(self, message: ServiceBusReceivedMessage, receiver: ServiceBusReceiver, cancellation_event: asyncio.Event):
         message_id = message.message_id
@@ -186,27 +192,29 @@ class AzureMessageWorker:
 
         try:
             while not cancellation_event.is_set():
-                await asyncio.wait_for(cancellation_event.wait(), timeout=renewal_interval)
+                try:
+                    await asyncio.wait_for(cancellation_event.wait(), timeout=renewal_interval)
+                except asyncio.TimeoutError:
+                    pass  # normal
+
                 if cancellation_event.is_set():
                     break
-                    
+
                 processing_time = asyncio.get_event_loop().time() - start_time
                 if processing_time > max_processing_time:
-                    self._logger.warning(f"Message {message_id} exceeded max time ({max_processing_time}s); stopping lock renewal.")
+                    self._logger.warning(f"Message {message_id} exceeded max time; stopping lock renewal")
                     break
 
                 try:
                     await receiver.renew_message_lock(message)
                     renewal_count += 1
-                    self._logger.info(f"Renewed lock for message {message_id} (#{renewal_count})")
+                    self._logger.info(f"🔁 Renewed lock for message {message_id} ({renewal_count})")
                 except Exception as ex:
-                    self._logger.warning(f"Lock renewal failed for message {message_id}: {ex}")
+                    self._logger.warning(f"🔒 Lock renewal failed for {message_id}: {ex}")
                     break
-
-            self._logger.info(f"Auto-renewal finished for {message_id} after {renewal_count} renewals")
-        except asyncio.TimeoutError:
-            pass  # Normal timeout, continue loop
         except asyncio.CancelledError:
-            self._logger.info(f"Auto-renewal cancelled for {message_id} after {renewal_count} renewals")
+            self._logger.info(f"🔕 Auto-renewal cancelled for {message_id}")
         except Exception as ex:
-            self._logger.error(f"Auto-renewal error for message {message_id}: {ex}")
+            self._logger.error(f"⚠️ Auto-renewal error for {message_id}: {ex}")
+        finally:
+            self._logger.info(f"Auto-renewal finished for {message_id} after {renewal_count} renewals")

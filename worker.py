@@ -2,10 +2,11 @@ import asyncio
 import logging
 import sys
 
-from api import AiMessage
 from blocks_genesis._core.worker import WorkerConsoleApp
+from blocks_genesis._message.event_registry import EventRegistry
 from blocks_genesis._message.message_configuration import AzureServiceBusConfiguration, MessageConfiguration
-from blocks_genesis._message.event_registry import register_consumer
+from test_consumer import handle_user_created_event
+
 
 
 logger = logging.getLogger(__name__)
@@ -17,9 +18,9 @@ message_config = MessageConfiguration(
 )
 
 
-def main():
+def main(): 
     app = WorkerConsoleApp("blocks_ai_worker", message_config)
-
+    
     try:
         asyncio.run(app.run())
     except KeyboardInterrupt:
@@ -28,11 +29,8 @@ def main():
         logger.exception(f"💥 Fatal error: {e}", file=sys.stderr)
         sys.exit(1)
 
-
 if __name__ == "__main__":
     main()
     
     
-@register_consumer("AiMessage")
-def handle_user_created_event(event_data: AiMessage):
-    print(f"Handling user created event: {event_data}")
+
