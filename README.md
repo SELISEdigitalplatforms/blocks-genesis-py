@@ -192,7 +192,7 @@ pytest
 pytest --cov=blocks_genesis
 
 # Run specific test file
-pytest tests/test_auth.py
+pytest tests
 ```
 
 ## 📈 Monitoring & Observability

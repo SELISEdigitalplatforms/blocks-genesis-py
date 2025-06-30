@@ -35,6 +35,7 @@ packages = ["blocks_genesis"]
 
 [dependency-groups]
 dev = [
+    "pytest>=8.4.1",
     "twine>=6.1.0",
 ]
 
