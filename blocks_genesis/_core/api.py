@@ -52,10 +52,9 @@ def custom_generate_unique_id(route: APIRoute):
     """
     return f"{route.name}-{route.path.replace('/', '_')}"
 
-def fast_api_app(lifespan, is_local: bool = False, **kwargs: FastAPI) -> FastAPI:
+def fast_api_app(lifespan, **kwargs: FastAPI) -> FastAPI:
     app = FastAPI(
         lifespan=lifespan,
-        debug=is_local,
         generate_unique_id_function=custom_generate_unique_id,
         **kwargs
     )
@@ -71,7 +70,7 @@ async def close_lifespan():
     if hasattr(MongoHandler, '_mongo_logger') and MongoHandler._mongo_logger:
         MongoHandler._mongo_logger.stop()
         
-def configure_middlewares(app: FastAPI, is_local: bool = False, show_docs: bool = False, root_path: str = None):
+def configure_middlewares(app: FastAPI, is_local: bool = False, show_docs: bool = False):
     if not is_local:
         app.add_middleware(HTTPSRedirectMiddleware)
         
@@ -91,13 +90,14 @@ def configure_middlewares(app: FastAPI, is_local: bool = False, show_docs: bool 
     async def health():
         return {
             "status": "healthy",
-            "message": "pong" ,
+            "message": "pong",
         }
         
     @app.get("/swagger/index.html", include_in_schema=False)
     async def get_documentation(request:Request):
+        root_path = request.scope.get("root_path", None)
         openapi_url = f"{root_path}/openapi.json" if root_path else "/openapi.json"
-        
+        print(openapi_url)
         if show_docs:
             return get_swagger_ui_html(openapi_url=openapi_url, title="Swagger")
         else:

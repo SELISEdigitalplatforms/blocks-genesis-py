@@ -38,11 +38,11 @@ async def lifespan(app: FastAPI):
 
 
 
-app = fast_api_app(lifespan=lifespan, is_local=config["is_local"])
+app = fast_api_app(lifespan=lifespan, root_path="/api")
 
 
 # Add middleware in order
-configure_middlewares(app, config["is_local"], show_docs=True)
+configure_middlewares(app, True, show_docs=True)
 
 
 
