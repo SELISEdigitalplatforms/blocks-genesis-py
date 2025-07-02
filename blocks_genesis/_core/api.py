@@ -57,9 +57,6 @@ def fast_api_app(lifespan, is_local: bool = False, **kwargs: FastAPI) -> FastAPI
         lifespan=lifespan,
         debug=is_local,
         generate_unique_id_function=custom_generate_unique_id,
-        redoc_url=None,
-        docs_url=None,
-        openapi_url=None,
         **kwargs
     )
     
@@ -74,7 +71,7 @@ async def close_lifespan():
     if hasattr(MongoHandler, '_mongo_logger') and MongoHandler._mongo_logger:
         MongoHandler._mongo_logger.stop()
         
-def configure_middlewares(app: FastAPI, is_local: bool = False, show_docs: bool = False):
+def configure_middlewares(app: FastAPI, is_local: bool = False, show_docs: bool = False, root_path: str = None):
     if not is_local:
         app.add_middleware(HTTPSRedirectMiddleware)
         
@@ -99,7 +96,6 @@ def configure_middlewares(app: FastAPI, is_local: bool = False, show_docs: bool 
         
     @app.get("/swagger/index.html", include_in_schema=False)
     async def get_documentation(request:Request):
-        root_path = request.scope.get("root_path", "").rstrip("/")
         openapi_url = f"{root_path}/openapi.json" if root_path else "/openapi.json"
         
         if show_docs:
