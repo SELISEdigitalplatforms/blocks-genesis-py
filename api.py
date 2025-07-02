@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
 from blocks_genesis._auth.auth import authorize
-from blocks_genesis._core.api import close_lifespan, configure_lifespan, configure_middlewares
+from blocks_genesis._core.api import close_lifespan, configure_lifespan, configure_middlewares, fast_api_app
 from blocks_genesis._core.configuration import get_configurations, load_configurations
 from blocks_genesis._database.db_context import DbContext
 from blocks_genesis._message.azure.azure_message_client import AzureMessageClient
@@ -38,12 +38,11 @@ async def lifespan(app: FastAPI):
 
 
 
-app = FastAPI(lifespan=lifespan, debug=True)
+app = fast_api_app(lifespan=lifespan, is_local=config["is_local"])
+
 
 # Add middleware in order
-configure_middlewares(app, config["is_local"])
-
-
+configure_middlewares(app, config["is_local"], show_docs=True)
 
 
 

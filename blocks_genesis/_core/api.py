@@ -1,7 +1,8 @@
 import logging
-from fastapi import FastAPI, logger
+from fastapi import FastAPI, Request, logger
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.routing import APIRoute
 from starlette.middleware.cors import CORSMiddleware
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from blocks_genesis._cache.cache_provider import CacheProvider
@@ -17,6 +18,8 @@ from blocks_genesis._message.message_configuration import MessageConfiguration
 from blocks_genesis._middlewares.global_exception_middleware import GlobalExceptionHandlerMiddleware
 from blocks_genesis._middlewares.tenant_middleware import TenantValidationMiddleware
 from blocks_genesis._tenant.tenant_service import initialize_tenant_service
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +42,29 @@ async def configure_lifespan(name: str, message_config: MessageConfiguration):
     DbContext.set_provider(MongoDbContextProvider())
     
     AzureMessageClient.initialize(message_config)
+
+
+
+def custom_generate_unique_id(route: APIRoute):
+    """
+    Custom function to generate unique IDs for routes.
+    This is useful for debugging and logging purposes.
+    """
+    return f"{route.name}-{route.path.replace('/', '_')}"
+
+def fast_api_app(lifespan, is_local: bool = False, **kwargs: FastAPI) -> FastAPI:
+    app = FastAPI(
+        lifespan=lifespan,
+        debug=is_local,
+        generate_unique_id_function=custom_generate_unique_id,
+        redoc_url=None,
+        docs_url=None,
+        openapi_url=None,
+        **kwargs
+    )
     
+    return app
+   
     
 async def close_lifespan():
     logger.info("🛑 Shutting down services...")
@@ -49,7 +74,7 @@ async def close_lifespan():
     if hasattr(MongoHandler, '_mongo_logger') and MongoHandler._mongo_logger:
         MongoHandler._mongo_logger.stop()
         
-def configure_middlewares(app: FastAPI, is_local: bool = False):
+def configure_middlewares(app: FastAPI, is_local: bool = False, show_docs: bool = False):
     if not is_local:
         app.add_middleware(HTTPSRedirectMiddleware)
         
@@ -65,9 +90,26 @@ def configure_middlewares(app: FastAPI, is_local: bool = False):
         allow_headers=["*"],
     )
     
-    @app.get("/ping")
+    @app.get("/ping", include_in_schema=False)
     async def health():
         return {
             "status": "healthy",
-            "secrets_status": "loaded" ,
+            "message": "pong" ,
         }
+        
+    @app.get("/swagger/index.html", include_in_schema=False)
+    async def get_documentation(request:Request):
+        root_path = request.scope.get("root_path", "").rstrip("/")
+        openapi_url = f"{root_path}/openapi.json" if root_path else "/openapi.json"
+        
+        if show_docs:
+            return get_swagger_ui_html(openapi_url=openapi_url, title="Swagger")
+        else:
+            return "NOT_ALLOWED"
+
+    @app.get("/openapi.json", include_in_schema=False)
+    async def openapi():
+        if show_docs:
+            return get_openapi(title=app.title, version=app.version, routes=app.routes)
+        return {}
+    

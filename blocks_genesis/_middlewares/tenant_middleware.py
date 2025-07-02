@@ -12,7 +12,7 @@ from blocks_genesis._tenant.tenant_service import get_tenant_service
 class TenantValidationMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
-        excluded_paths = ["/docs", "/redoc", "/openapi.json", "/ping"]
+        excluded_paths = ["/swagger/index.html", "/openapi.json", "/ping"]
         if request.url.path in excluded_paths:
             return await call_next(request)
         
