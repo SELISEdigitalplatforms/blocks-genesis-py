@@ -102,7 +102,8 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
             except:
                 return ""
 
-        allowed = tenant.allowed_domains
+        allowed = tenant.allowed_domains.map(lambda d: extract_domain(d))
         current = extract_domain(request.headers.get("origin") or "") or extract_domain(request.headers.get("referer") or "")
+        normalized_app_domain = extract_domain(tenant.application_domain)
 
-        return not current or current == "localhost" or current == tenant.application_domain or current in allowed
+        return not current or current == "localhost" or current == normalized_app_domain or current in allowed
