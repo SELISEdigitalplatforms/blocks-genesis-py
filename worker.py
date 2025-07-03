@@ -17,13 +17,18 @@ message_config = MessageConfiguration(
 )
 
 
+async def callback():
+    print("Callback called")
+
+
+
 def main(): 
     app = WorkerConsoleApp("blocks_ai_worker", message_config, {
         "AiMessage": handle_user_created_event
     })
     
     try:
-        asyncio.run(app.run())
+        asyncio.run(app.run(callback))
     except KeyboardInterrupt:
         logger.exception("\n👋 Graceful shutdown by user")
     except Exception as e:

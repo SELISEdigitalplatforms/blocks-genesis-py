@@ -40,6 +40,7 @@ class BlocksContext(BaseModel):
     user_name: str = ""
     phone_number: str = ""
     display_name: str = ""
+    actual_tenant_id: str = ""
     
     class Config:
         arbitrary_types_allowed = True
@@ -114,7 +115,8 @@ class BlocksContextManager:
         user_name: Optional[str] = None,
         phone_number: Optional[str] = None,
         display_name: Optional[str] = None,
-        oauth_token: Optional[str] = None
+        oauth_token: Optional[str] = None,
+        actual_tenant_id: Optional[str] = None
     ) -> BlocksContext:
         """Create BlocksContext from individual parameters"""
         return BlocksContext(
@@ -130,7 +132,8 @@ class BlocksContextManager:
             user_name=user_name or "",
             phone_number=phone_number or "",
             display_name=display_name or "",
-            oauth_token=oauth_token or ""
+            oauth_token=oauth_token or "",
+            actual_tenant_id=actual_tenant_id or ""
         )
     
     @staticmethod

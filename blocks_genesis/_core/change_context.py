@@ -9,7 +9,7 @@ async def change_context(project_key: str):
     Activity.set_current_property("baggage.ActualTenantId", context.tenant_id)
     
     if project_key is None or project_key == "" or project_key == context.tenant_id:
-        return;
+        return
     
     is_root = await get_tenant_service().get_tenant(context.tenant_id)._id
     
@@ -28,7 +28,8 @@ async def change_context(project_key: str):
                 user_name=context.user_name,
                 phone_number=context.phone_number,
                 display_name=context.display_name,
-                oauth_token=context.oauth_token
+                oauth_token=context.oauth_token,
+                actual_tenant_id=context.tenant_id
             )
         )
         

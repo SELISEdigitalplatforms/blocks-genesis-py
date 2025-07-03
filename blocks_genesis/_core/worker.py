@@ -111,13 +111,15 @@ class WorkerConsoleApp:
 
         self.logger.info("✅ Shutdown complete")
 
-    async def run(self):
+    async def run(self, callback: Union[Callable[..., Any], Type[Any]]):
         """
         Runs the worker application using the setup_services context manager.
         It handles graceful shutdown on cancellation or keyboard interrupt.
         """
         async with self.setup_services() as worker:
             self.logger.info("🔄 Worker running... Press Ctrl+C to stop")
+            if callback and callable(callback):
+                await callback()
             try:
                 await worker.run() 
             except asyncio.CancelledError:
