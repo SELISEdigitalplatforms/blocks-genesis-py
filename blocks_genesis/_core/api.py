@@ -17,6 +17,7 @@ from blocks_genesis._message.azure.azure_message_client import AzureMessageClien
 from blocks_genesis._message.message_configuration import MessageConfiguration
 from blocks_genesis._middlewares.global_exception_middleware import GlobalExceptionHandlerMiddleware
 from blocks_genesis._middlewares.tenant_middleware import TenantValidationMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from blocks_genesis._tenant.tenant_service import initialize_tenant_service
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
@@ -70,10 +71,8 @@ async def close_lifespan():
     if hasattr(MongoHandler, '_mongo_logger') and MongoHandler._mongo_logger:
         MongoHandler._mongo_logger.stop()
         
-def configure_middlewares(app: FastAPI, is_local: bool = False, show_docs: bool = False):
-    if not is_local:
-        app.add_middleware(HTTPSRedirectMiddleware)
-        
+def configure_middlewares(app: FastAPI, show_docs: bool = False):
+    app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=["*"])    
     app.add_middleware(GZipMiddleware)
     app.add_middleware(TenantValidationMiddleware)
     app.add_middleware(GlobalExceptionHandlerMiddleware)

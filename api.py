@@ -42,7 +42,7 @@ app = fast_api_app(lifespan=lifespan, root_path="/api")
 
 
 # Add middleware in order
-configure_middlewares(app, True, show_docs=True)
+configure_middlewares(app, show_docs=True)
 
 
 
