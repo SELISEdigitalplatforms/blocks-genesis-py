@@ -11,7 +11,7 @@ async def change_context(project_key: str):
     if project_key is None or project_key == "" or project_key == context.tenant_id:
         return
     
-    is_root = await get_tenant_service().get_tenant(context.tenant_id)._id
+    is_root = (await get_tenant_service().get_tenant(context.tenant_id)).is_root_tenant
     
     if is_root:
         BlocksContextManager.set_context(
