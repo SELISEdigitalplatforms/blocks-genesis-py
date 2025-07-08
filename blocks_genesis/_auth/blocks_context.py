@@ -98,7 +98,8 @@ class BlocksContextManager:
             user_name=get_claim_value(BlocksContext.USER_NAME_CLAIM),
             phone_number=get_claim_value(BlocksContext.PHONE_NUMBER_CLAIM),
             display_name=get_claim_value(BlocksContext.DISPLAY_NAME_CLAIM),
-            oauth_token=get_claim_value(BlocksContext.TOKEN_CLAIM)
+            oauth_token=get_claim_value(BlocksContext.TOKEN_CLAIM),
+            actual_tenant_id=get_claim_value(BlocksContext.TENANT_ID_CLAIM)
         )
     
     @staticmethod
