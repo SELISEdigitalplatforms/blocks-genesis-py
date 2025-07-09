@@ -92,7 +92,7 @@ class AzureMessageClient(MessageClient):
 
             message_body = EventMessage(
                 body=json.dumps(payload_dict),
-                type=type(consumer_message.payload).__name__
+                type=consumer_message.payload_type
             )
 
             sb_message = ServiceBusMessage(

@@ -3,6 +3,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
+from pydantic import BaseModel
 from blocks_genesis._auth.auth import authorize
 from blocks_genesis._core.api import close_lifespan, configure_lifespan, configure_middlewares, fast_api_app
 from blocks_genesis._core.configuration import get_configurations, load_configurations
@@ -51,11 +52,12 @@ configure_middlewares(app, show_docs=True)
 async def root():
     logger.info("Root endpoint accessed")
     client = AzureMessageClient.get_instance()
+    message = AiMessage(message="Hello from AI API!")
     await client.send_to_consumer_async(ConsumerMessage(
         consumer_name="ai_queue",
-        payload= AiMessage("Hello from AI API!"),
+        payload=message.model_dump(),
+        payload_type="AiMessage"
     ))
-    db = DbContext.get_provider()
     return {"message": "Hello World", "secrets_loaded": True}
 
 
@@ -69,8 +71,7 @@ async def health():
     
   
     
-    
-@dataclass
-class AiMessage:
+
+class AiMessage(BaseModel):
     message: str
 

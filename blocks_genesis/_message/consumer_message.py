@@ -1,10 +1,11 @@
-from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Dict, Optional
 
-@dataclass
-class ConsumerMessage:
+from pydantic import BaseModel
+
+class ConsumerMessage(BaseModel):
     consumer_name: str
-    payload: Any  
+    payload: Dict
+    payload_type: str
     context: Optional[str] = None
     routing_key: str = ""
 

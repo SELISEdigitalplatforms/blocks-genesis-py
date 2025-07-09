@@ -1,6 +1,6 @@
-from dataclasses import dataclass
+from pydantic import BaseModel
 
-@dataclass
-class EventMessage:
+
+class EventMessage(BaseModel):
     body: str
     type: str

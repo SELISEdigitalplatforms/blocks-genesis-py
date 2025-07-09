@@ -1,12 +1,12 @@
-from dataclasses import dataclass, field
 from typing import List, Optional
 from datetime import timedelta
 
+from pydantic import BaseModel, Field
 
-@dataclass
-class AzureServiceBusConfiguration:
-    queues: List[str] = field(default_factory=list)
-    topics: List[str] = field(default_factory=list)
+
+class AzureServiceBusConfiguration(BaseModel):
+    queues: List[str] = Field(default_factory=list)
+    topics: List[str] = Field(default_factory=list)
     queue_max_size_in_megabytes: int = 1024
     queue_max_delivery_count: int = 2
     queue_prefetch_count: int = 10
@@ -29,8 +29,8 @@ class AzureServiceBusConfiguration:
         self.topics = [t.lower() for t in topic_list if t and t.strip()]
 
 
-@dataclass
-class MessageConfiguration:
+
+class MessageConfiguration(BaseModel):
     connection: Optional[str] = None
     service_name: Optional[str] = None
     azure_service_bus_configuration: Optional[AzureServiceBusConfiguration] = None
