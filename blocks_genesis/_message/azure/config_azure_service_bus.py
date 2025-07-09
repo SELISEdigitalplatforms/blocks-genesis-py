@@ -1,6 +1,6 @@
 from typing import Optional
+from datetime import timedelta
 from azure.servicebus.management import ServiceBusAdministrationClient
-from blocks_genesis._core.secret_loader import get_blocks_secret
 from blocks_genesis._message.message_configuration import MessageConfiguration
 
 
@@ -11,7 +11,9 @@ class ConfigAzureServiceBus:
     @classmethod
     def configure_queue_and_topic(cls, message_config: MessageConfiguration):
         try:
-            cls._admin_client = ServiceBusAdministrationClient.from_connection_string(message_config.connection)
+            cls._admin_client = ServiceBusAdministrationClient.from_connection_string(
+                message_config.connection
+            )
             cls._message_config = message_config
 
             cls._create_queues()
@@ -23,7 +25,8 @@ class ConfigAzureServiceBus:
 
     @classmethod
     def _create_queues(cls):
-        queues = cls._message_config.azure_service_bus_configuration.queues or []
+        config = cls._message_config.azure_service_bus_configuration
+        queues = config.queues or []
 
         for queue_name in queues:
             if cls._check_queue_exists(queue_name):
@@ -32,9 +35,10 @@ class ConfigAzureServiceBus:
 
             cls._admin_client.create_queue(
                 queue_name,
-                max_size_in_megabytes=cls._message_config.azure_service_bus_configuration.queue_max_size_in_megabytes,
-                max_delivery_count=cls._message_config.azure_service_bus_configuration.queue_max_delivery_count,
-                default_message_time_to_live=cls._message_config.azure_service_bus_configuration.queue_default_message_time_to_live
+                max_size_in_megabytes=config.queue_max_size_in_megabytes,
+                max_delivery_count=config.queue_max_delivery_count,
+                default_message_time_to_live=config.queue_default_message_time_to_live, 
+                lock_duration=timedelta(seconds=300),  # 5 minutes
             )
             print(f"✅ Queue created: {queue_name}")
 
@@ -48,7 +52,8 @@ class ConfigAzureServiceBus:
 
     @classmethod
     def _create_topics_and_subscriptions(cls):
-        topics = cls._message_config.azure_service_bus_configuration.topics or []
+        config = cls._message_config.azure_service_bus_configuration
+        topics = config.topics or []
 
         for topic_name in topics:
             if cls._check_topic_exists(topic_name):
@@ -56,8 +61,8 @@ class ConfigAzureServiceBus:
             else:
                 cls._admin_client.create_topic(
                     topic_name,
-                    max_size_in_megabytes=cls._message_config.azure_service_bus_configuration.topic_max_size_in_megabytes,
-                    default_message_time_to_live=cls._message_config.azure_service_bus_configuration.topic_default_message_time_to_live
+                    max_size_in_megabytes=config.topic_max_size_in_megabytes,
+                    default_message_time_to_live=config.topic_default_message_time_to_live,
                 )
                 print(f"✅ Topic created: {topic_name}")
 
@@ -73,7 +78,9 @@ class ConfigAzureServiceBus:
 
     @classmethod
     def _create_subscription(cls, topic_name: str):
+        config = cls._message_config.azure_service_bus_configuration
         subscription_name = cls._message_config.get_subscription_name(topic_name)
+
         if cls._check_subscription_exists(topic_name, subscription_name):
             print(f"Subscription '{subscription_name}' for topic '{topic_name}' already exists. Skipping.")
             return
@@ -81,8 +88,9 @@ class ConfigAzureServiceBus:
         cls._admin_client.create_subscription(
             topic_name,
             subscription_name,
-            max_delivery_count=cls._message_config.azure_service_bus_configuration.topic_subscription_max_delivery_count,
-            default_message_time_to_live=cls._message_config.azure_service_bus_configuration.topic_subscription_default_message_time_to_live
+            max_delivery_count=config.topic_subscription_max_delivery_count,
+            default_message_time_to_live=config.topic_subscription_default_message_time_to_live,
+            lock_duration=timedelta(seconds=300),
         )
         print(f"✅ Subscription '{subscription_name}' created for topic '{topic_name}'")
 

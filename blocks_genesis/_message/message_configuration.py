@@ -14,12 +14,12 @@ class AzureServiceBusConfiguration(BaseModel):
 
     topic_prefetch_count: int = 10
     topic_max_size_in_megabytes: int = 1024
-    topic_default_message_time_to_live: timedelta = timedelta(days=30)
+    topic_default_message_time_to_live: timedelta = timedelta(days=7)
 
     topic_subscription_max_delivery_count: int = 2
     topic_subscription_default_message_time_to_live: timedelta = timedelta(days=7)
     max_concurrent_calls: int = 5
-    max_message_processing_time_in_minutes: int = 60
+    max_message_processing_time_in_minutes: int = 300
     message_lock_renewal_interval_seconds: int = 270
 
     def set_queues(self, queue_list: List[str]):
