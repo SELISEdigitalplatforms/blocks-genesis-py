@@ -25,18 +25,18 @@ from fastapi.openapi.utils import get_openapi
 logger = logging.getLogger(__name__)
 
 async def configure_lifespan(name: str, message_config: MessageConfiguration):
-    logger.info("🚀 Initializing services...")
-    logger.info("🔐 Loading secrets before app creation...")
+    logger.info("Initializing services...")
+    logger.info("Loading secrets before app creation...")
     secret_loader = SecretLoader(name)
     await secret_loader.load_secrets()
-    logger.info("✅ Secrets loaded successfully!")
+    logger.info("Secrets loaded successfully!")
     
     configure_logger()
     logger.info("Logger started")
 
     # Enable tracing after secrets are loaded
     configure_tracing()
-    logger.info("🔍 Tracing enabled successfully!")
+    logger.info("Tracing enabled successfully!")
 
     CacheProvider.set_client(RedisClient())
     await initialize_tenant_service()
@@ -64,7 +64,7 @@ def fast_api_app(lifespan, **kwargs: FastAPI) -> FastAPI:
    
     
 async def close_lifespan():
-    logger.info("🛑 Shutting down services...")
+    logger.info("Shutting down services...")
     
     await AzureMessageClient.get_instance().close()
     # Shutdown logic

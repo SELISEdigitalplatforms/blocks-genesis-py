@@ -37,7 +37,7 @@ class AzureMessageWorker:
             self._logger.error("Connection string missing")
             raise ValueError("Connection string missing")
         self._service_bus_client = ServiceBusClient.from_connection_string(connection)
-        self._logger.info("✅ Service Bus Client initialized")
+        self._logger.info("Service Bus Client initialized")
 
     async def stop(self):
         for message_id, event in self._active_message_renewals.items():
@@ -54,7 +54,7 @@ class AzureMessageWorker:
         if self._service_bus_client:
             await self._service_bus_client.close()
 
-        self._logger.info("🛑 Worker stopped")
+        self._logger.info("Worker stopped")
 
     async def run(self):
         if not self._service_bus_client:
@@ -82,7 +82,7 @@ class AzureMessageWorker:
             self._receivers.append(receiver)
             receiver_tasks.append(self.safe_receiver_wrapper(receiver, topic_name))
 
-        self._logger.info("🚀 Receivers started")
+        self._logger.info("Receivers started")
         await asyncio.gather(*receiver_tasks, return_exceptions=True)
 
     async def safe_receiver_wrapper(self, receiver: ServiceBusReceiver, name: str):
@@ -100,7 +100,7 @@ class AzureMessageWorker:
                     await self.message_handler(receiver, message)
                 except Exception as ex:
                     self._logger.error(
-                        "❌ Error in message_handler, skipping message: %s", ex
+                        "Error in message_handler, skipping message: %s", ex
                     )
                     try:
                         await receiver.abandon_message(message)
@@ -123,7 +123,7 @@ class AzureMessageWorker:
         self, receiver: ServiceBusReceiver, message: ServiceBusReceivedMessage
     ):
         message_id = message.message_id
-        self._logger.info("📩 Received message: %s", message_id)
+        self._logger.info("Received message: %s", message_id)
 
         app_props = self.decode_app_properties(message.application_properties)
         trace_id = app_props.get("TraceId", "")
@@ -194,23 +194,23 @@ class AzureMessageWorker:
                 await self._consumer.process_message(msg.type, msg.body)
                 processing_time = (asyncio.get_event_loop().time() - start_time) * 1000
                 self._logger.info(
-                    "✅ Processed message %s in %.1fms", message_id, processing_time
+                    "Processed message %s in %.1fms", message_id, processing_time
                 )
 
                 span.set_attribute("response", "Successfully Completed")
                 span.set_status(Status(StatusCode.OK, "Message processed successfully"))
 
                 await receiver.complete_message(message)
-                self._logger.info("🗃️ Message %s completed", message_id)
+                self._logger.info("Message %s completed", message_id)
 
         except Exception as ex:
             self._logger.error(
-                "💥 Processing failed for message %s: %s", message_id, ex
+                "Processing failed for message %s: %s", message_id, ex
             )
             try:
                 await receiver.abandon_message(message)
             except Exception as abandon_ex:
-                self._logger.warning("⚠️ Abandon message failed: %s", abandon_ex)
+                self._logger.warning("Abandon message failed: %s", abandon_ex)
             raise
         finally:
             cancellation_event.set()
@@ -259,18 +259,18 @@ class AzureMessageWorker:
                     await receiver.renew_message_lock(message)
                     renewal_count += 1
                     self._logger.info(
-                        "🔁 Renewed lock for message %s (%s)", message_id, renewal_count
+                        "Renewed lock for message %s (%s)", message_id, renewal_count
                     )
                 except Exception as ex:
                     self._logger.warning(
-                        "🔒 Lock renewal failed for %s: %s", message_id, ex
+                        "Lock renewal failed for %s: %s", message_id, ex
                     )
                     cancellation_event.set()
                     
         except asyncio.CancelledError:
-            self._logger.info("🔕 Auto-renewal cancelled for %s", message_id)
+            self._logger.info("Auto-renewal cancelled for %s", message_id)
         except Exception as ex:
-            self._logger.error("⚠️ Auto-renewal error for %s: %s", message_id, ex)
+            self._logger.error("Auto-renewal error for %s: %s", message_id, ex)
         finally:
             self._logger.info(
                 "Auto-renewal finished for %s after %s renewals",

@@ -40,7 +40,7 @@ class ConfigAzureServiceBus:
                 default_message_time_to_live=config.queue_default_message_time_to_live, 
                 lock_duration=timedelta(seconds=300),  # 5 minutes
             )
-            print(f"✅ Queue created: {queue_name}")
+            print(f"Queue created: {queue_name}")
 
     @classmethod
     def _check_queue_exists(cls, queue_name: str) -> bool:
@@ -64,7 +64,7 @@ class ConfigAzureServiceBus:
                     max_size_in_megabytes=config.topic_max_size_in_megabytes,
                     default_message_time_to_live=config.topic_default_message_time_to_live,
                 )
-                print(f"✅ Topic created: {topic_name}")
+                print(f"Topic created: {topic_name}")
 
             cls._create_subscription(topic_name)
 
@@ -92,7 +92,7 @@ class ConfigAzureServiceBus:
             default_message_time_to_live=config.topic_subscription_default_message_time_to_live,
             lock_duration=timedelta(seconds=300),
         )
-        print(f"✅ Subscription '{subscription_name}' created for topic '{topic_name}'")
+        print(f"Subscription '{subscription_name}' created for topic '{topic_name}'")
 
     @classmethod
     def _check_subscription_exists(cls, topic_name: str, subscription_name: str) -> bool:

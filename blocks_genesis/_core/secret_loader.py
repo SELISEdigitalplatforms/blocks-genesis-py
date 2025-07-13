@@ -21,7 +21,7 @@ class SecretLoader:
 
         fields = fields or list(BlocksSecret.model_fields.keys())
         try:
-            logger.info("🔐 Loading secrets from Azure Key Vault...")
+            logger.info("Loading secrets from Azure Key Vault...")
             raw_secrets: Dict[str, str] = await self.vault.get_secrets(fields)
 
             processed_secrets: Dict[str, object] = {
@@ -37,9 +37,9 @@ class SecretLoader:
             secret.ServiceName = self.service_name
 
             _loaded_secret = secret
-            logger.info("✅ Secrets loaded successfully")
+            logger.info("Secrets loaded successfully")
         except Exception:
-            logger.exception("❌ Failed to load secrets")
+            logger.exception("Failed to load secrets")
             raise
 
     async def close(self) -> None:

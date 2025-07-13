@@ -49,20 +49,20 @@ class WorkerConsoleApp:
         self.logger.info("🚀 Starting Blocks AI Worker Console App...")
 
         try:
-            self.logger.info("🔐 Loading secrets...")
+            self.logger.info("Loading secrets...")
             await SecretLoader(self.name).load_secrets()
-            self.logger.info("✅ Secrets loaded successfully")
+            self.logger.info("Secrets loaded successfully")
             
             configure_logger()
-            self.logger.info("📝 Logger configured")
+            self.logger.info("Logger configured")
 
             configure_tracing()
-            self.logger.info("🔍 Tracing configured")
+            self.logger.info("Tracing configured")
 
             CacheProvider.set_client(RedisClient())
             await initialize_tenant_service()
             DbContext.set_provider(MongoDbContextProvider())
-            self.logger.info("✅ Cache, TenantService, and Mongo Context initialized")
+            self.logger.info("Cache, TenantService, and Mongo Context initialized")
 
             for event_type, handler in self.register_consumer.items():
                 if isinstance(event_type, str) and event_type and (callable(handler) or hasattr(handler, "handle")):
@@ -82,11 +82,11 @@ class WorkerConsoleApp:
             self.message_worker = AzureMessageWorker(self.message_config)
             self.message_worker.initialize()
 
-            self.logger.info("✅ Azure Message Worker initialized and ready")
+            self.logger.info("Azure Message Worker initialized and ready")
             yield self.message_worker
 
         except Exception as ex:
-            self.logger.error(f"❌ Startup failed: {ex}", exc_info=True)
+            self.logger.error(f"Startup failed: {ex}", exc_info=True)
             raise 
 
         finally:
@@ -97,7 +97,7 @@ class WorkerConsoleApp:
         Performs asynchronous cleanup operations before the application exits.
         This includes stopping the message worker and potentially the Mongo logger.
         """
-        self.logger.info("🛑 Cleaning up services...")
+        self.logger.info("Cleaning up services...")
 
         if self.message_worker:
             self.logger.info("Stopping Azure Message Worker...")
@@ -117,15 +117,15 @@ class WorkerConsoleApp:
         It handles graceful shutdown on cancellation or keyboard interrupt.
         """
         async with self.setup_services() as worker:
-            self.logger.info("🔄 Worker running... Press Ctrl+C to stop")
+            self.logger.info("Worker running... Press Ctrl+C to stop")
             if callback and callable(callback):
                 await callback()
             try:
                 await worker.run() 
             except asyncio.CancelledError:
-                self.logger.info("🛑 Received cancellation signal (e.g., from task.cancel()).")
+                self.logger.info("Received cancellation signal (e.g., from task.cancel()).")
             except KeyboardInterrupt:
-                self.logger.info("⏹️ Received interrupt signal (Ctrl+C). Initiating graceful shutdown.")
+                self.logger.info("Received interrupt signal (Ctrl+C). Initiating graceful shutdown.")
             finally:
                 self.logger.info("Worker run loop exited.")
 

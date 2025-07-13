@@ -43,7 +43,7 @@ class AzureMessageClient(MessageClient):
         with cls._singleton_lock:
             if cls._instance is None:
                 cls._instance = cls(message_config)
-                logger.info("✅ AzureMessageClient singleton initialized.")
+                logger.info("AzureMessageClient singleton initialized.")
 
     @classmethod
     def get_instance(cls) -> 'AzureMessageClient':
