@@ -1743,7 +1743,7 @@ wheels = [
 
 [[package]]
 name = "seliseblocks-genesis"
-version = "0.2.9"
+version = "0.2.14"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
