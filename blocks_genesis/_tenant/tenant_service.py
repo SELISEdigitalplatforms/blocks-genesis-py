@@ -4,6 +4,7 @@ import re
 from typing import Dict, Optional, Tuple
 from motor.motor_asyncio import AsyncIOMotorClient
 
+# Assuming these imports exist and are correct
 from blocks_genesis._cache import CacheClient
 from blocks_genesis._cache.cache_provider import CacheProvider
 from blocks_genesis._core.secret_loader import get_blocks_secret
@@ -33,22 +34,18 @@ class TenantService:
     async def initialize(self):
         """Explicit initializer for async setup"""
         async with self._initialize_lock:
-            if self._initialized:
-                return
-
+            
             await self._load_tenants()
             asyncio.create_task(self._subscribe_to_updates())
-            self._initialized = True
             _logger.info("TenantService initialized successfully")
 
+    # ... (get_tenant, get_tenant_by_domain, etc. are unchanged) ...
     async def get_tenant(self, tenant_id: str) -> Optional[Tenant]:
         if not tenant_id:
             return None
-
         tenant = self._tenant_cache.get(tenant_id)
         if tenant:
             return tenant
-
         tenant = await self._load_tenant_from_db(tenant_id)
         if tenant:
             self._tenant_cache[tenant.tenant_id] = tenant
@@ -103,24 +100,47 @@ class TenantService:
         except Exception as e:
             _logger.exception(f"Error loading tenant {tenant_id}: {e}")
         return None
+    
+    # --- START OF THE FIX ---
 
     async def _subscribe_to_updates(self):
         try:
             await self.cache.subscribe_async(
                 self._update_channel,
-                self._handle_update
+                # CHANGE 1: Pass the new synchronous wrapper as the callback
+                self._handle_update_wrapper
             )
             _logger.info("Subscribed to tenant updates")
         except Exception as e:
             _logger.exception(f"Failed to subscribe to updates: {e}")
 
-    async def _handle_update(self, channel: str, message: str):
+    # CHANGE 2: A new SYNCHRONOUS wrapper method.
+    # This method is called by the cache library without await.
+    def _handle_update_wrapper(self, channel: str, message: str):
+        """
+        Synchronous wrapper to safely schedule the async update logic.
+        """
         try:
-            _logger.info(f"Received tenant update: {message}")
-            await self._load_tenants()
+            _logger.info(f"Received update message on channel '{channel}'. Scheduling task.")
+            # This correctly schedules the async task to run on the event loop
+            asyncio.create_task(self._process_update_async(channel, message))
         except Exception as e:
-            _logger.exception(f"Error handling update: {e}")
+            _logger.exception(f"Error creating tenant update task: {e}")
 
+    # CHANGE 3: The original async handler is renamed.
+    # It contains the actual asynchronous logic.
+    async def _process_update_async(self, channel: str, message: str):
+        """
+        Asynchronously processes the tenant update by reloading all tenants.
+        """
+        try:
+            _logger.info(f"Processing tenant update from message: {message}")
+            await self._load_tenants()
+            _logger.info("Tenant cache successfully refreshed.")
+        except Exception as e:
+            _logger.exception(f"Error during tenant cache refresh: {e}")
+
+    # --- END OF THE FIX ---
 
 # Global tenant service singleton instance
 _tenant_service: Optional[TenantService] = None
