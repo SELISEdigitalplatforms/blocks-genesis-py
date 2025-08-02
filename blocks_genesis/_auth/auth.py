@@ -60,7 +60,8 @@ async def authenticate(request: Request, tenant_service: TenantService, cache_cl
     if header and any(header.startswith(prefix) for prefix in ["bearer ", "Bearer "]):
         token = header.split(" ", 1)[1].strip()
     else:
-        token = request.cookies.get("access_token", "")
+        bc = BlocksContextManager.get_context()
+        token = request.cookies.get(f"access_token_{bc.tenant_id}", "")
         
     if not token:
         raise HTTPException(401, "Token missing")
