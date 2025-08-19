@@ -67,8 +67,24 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
             )
             BlocksContextManager.set_context(ctx)
             Activity.set_current_property("SecurityContext", str(ctx.__dict__))
+            
+            request_size = int(request.headers.get("content-length", 0))
 
             response = await call_next(request)
+            
+            body = b"".join([chunk async for chunk in response.body_iterator])
+            response_size = len(body)
+
+            Activity.set_current_property("request.size.bytes", request_size)
+            Activity.set_current_property("response.size.bytes", response_size)
+            Activity.set_current_property("throughput.total.bytes", request_size + response_size)
+            
+            response = Response(
+                content=body,
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                media_type=response.media_type
+            )
             
             if not (200 <= response.status_code < 300):
                 Activity.set_current_property(StatusCode.ERROR, f"HTTP {response.status_code}")
