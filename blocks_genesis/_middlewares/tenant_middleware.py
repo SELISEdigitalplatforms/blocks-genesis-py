@@ -78,6 +78,7 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
             Activity.set_current_property("request.size.bytes", request_size)
             Activity.set_current_property("response.size.bytes", response_size)
             Activity.set_current_property("throughput.total.bytes", request_size + response_size)
+            Activity.set_current_property("usage", True)
             
             response = Response(
                 content=body,

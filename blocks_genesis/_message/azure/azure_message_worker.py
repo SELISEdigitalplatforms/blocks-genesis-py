@@ -164,6 +164,7 @@ class AzureMessageWorker:
                 span.set_attribute("SecurityContext", security_context_raw)
                 span.set_attribute("message.body", str(message))
                 span.set_attribute("baggage.TenantId", tenant_id)
+                span.set_attribute("usage", True)
 
                 try:
                     baggages = json.loads(baggage_str)
