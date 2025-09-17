@@ -59,7 +59,7 @@ class MongoBatchLogger:
             except Empty:
                 pass
 
-            if batch and (len(batch) >= self.batch_size or self._stop_event.is_set()):
+            if batch or self._stop_event.is_set():
                 try:
                     self.collection.insert_many(batch)
                 except Exception as e:
