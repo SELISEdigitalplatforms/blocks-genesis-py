@@ -69,7 +69,7 @@ async def apply_third_party_context(request: Request):
         return
 
     # Create new context object
-    new_context = BlocksContext.create(
+    new_context = BlocksContextManager.create(
         tenant_id=context_dict.get("tenant_id", ""),
         roles=context_dict.get("roles", []),
         user_id=context_dict.get("user_id", ""),

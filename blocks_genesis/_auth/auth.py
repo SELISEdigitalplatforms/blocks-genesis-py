@@ -284,16 +284,11 @@ async def _validate_token_with_fallback_async(
         payload[BlocksContext.REQUEST_URI_CLAIM] = str(request.url)
         payload[BlocksContext.TOKEN_CLAIM] = token
 
-        # Populate BlocksContext from payload (assumes you have this method)
-        blocks_context = BlocksContextManager.create_from_jwt_claims(payload)
-        BlocksContextManager.set_context(blocks_context)
-
-        # Activity baggage
-        Activity.set_current_property("baggage.UserId", blocks_context.user_id or "")
-        Activity.set_current_property("baggage.IsAuthenticate", "true")
-
         # Map and store third-party context fields (reads mapping from DB)
         await _store_third_party_blocks_context_activity(payload, request, db_context)
+        # Activity baggage
+        Activity.set_current_property("baggage.UserId", BlocksContextManager.get_context().user_id or "")
+        Activity.set_current_property("baggage.IsAuthenticate", "true")
 
         print("[Fallback] ✅ Fallback flow finished successfully.")
         return True
@@ -313,8 +308,8 @@ async def _store_third_party_blocks_context_activity(
 ):
     try:
         # find mapping doc (the C# code takes the first doc)
-        coll = await db_context.get_collection("ThirdPartyJWTClaims")
-        claims_mapper = await coll.find_one({}) or {}
+        coll = await  DbContext.get_provider().get_collection("ThirdPartyJWTClaims")
+        claims_mapper =  coll.find_one({}) or {}
 
         # helper functions to parse nested claim object like "user.roles" or "roles"
         def _extract_claim_property(claim_object: str) -> str:
@@ -342,58 +337,22 @@ async def _store_third_party_blocks_context_activity(
             except Exception:
                 return ""
 
-        # roles resolution
+        #roles resolution
         roles: List[str] = []
         role_claims_key = claims_mapper.get("Roles", "")
-        if role_claims_key:
-            # It might be a nested object or an array in payload
-            # e.g. claim mapping Roles -> "permissions.roles" or "roles"
-            obj_name = _get_claim_object_name(role_claims_key)
-            # find the claim in top-level payload
-            claim_value = payload.get(obj_name)
-            if claim_value is None:
-                # not a top-level claim; attempt to extract via full path
-                val = _extract_claim_value_from_payload(payload, role_claims_key)
-                try:
-                    arr = json.loads(val) if isinstance(val, str) and val.startswith(("[", "{")) else None
-                except Exception:
-                    arr = None
 
-                if isinstance(arr, list):
-                    roles = [str(x) for x in arr if x is not None]
-                elif val:
-                    # if val is comma separated string or single value
-                    if isinstance(val, str) and val.startswith("["):
-                        # already tried JSON parse, fallback to empty
-                        roles = []
-                    elif isinstance(val, str) and "," in val:
-                        roles = [r.strip() for r in val.split(",") if r.strip()]
-                    elif val:
-                        roles = [val]
-            else:
-                # top-level claim exists
-                if isinstance(claim_value, list):
-                    roles = [str(x) for x in claim_value if x is not None]
-                elif isinstance(claim_value, str):
-                    try:
-                        parsed = json.loads(claim_value)
-                        if isinstance(parsed, list):
-                            roles = [str(x) for x in parsed if x is not None]
-                        else:
-                            roles = [claim_value]
-                    except Exception:
-                        roles = [claim_value]
+        if role_claims_key:
+            obj_name = _get_claim_object_name(role_claims_key)
+            claim_value = payload.get(obj_name)
+            roles = claim_value[_extract_claim_property(role_claims_key)]
 
         # fallback: if still empty, look for standard role claim type
         if not roles:
             # common role claim keys
-            for k in ("roles", "role", "http://schemas.microsoft.com/ws/2008/06/identity/claims/role"):
-                val = payload.get(k)
-                if isinstance(val, list):
-                    roles = [str(x) for x in val if x is not None]
-                    break
-                elif isinstance(val, str):
-                    roles = [val]
+            for k in (role_claims_key, "http://schemas.microsoft.com/ws/2008/06/identity/claims/role"):
+                roleClaims = payload.get(k)
+                if(not roleClaims):
+                    roles = roleClaims
                     break
 
         # user identifier
@@ -412,10 +371,6 @@ async def _store_third_party_blocks_context_activity(
         else:
             user_id = sub_claim or ""
 
-        # expireOn: use 'exp' from token (numeric) -> convert to datetime
-        exp_val = payload.get("exp")
-        expire_on = datetime.fromtimestamp(int(exp_val), tz=timezone.utc) if exp_val else None
-
         # username and display name mapping
         def _map_field(mapper_key: str, fallback_field: str = "") -> str:
             mapper_val = claims_mapper.get(mapper_key, "")
@@ -431,26 +386,23 @@ async def _store_third_party_blocks_context_activity(
         # email mapping: if not set, try mapper
         email = email_claim or _extract_claim_value_from_payload(payload, claims_mapper.get("Email", "") or "")
 
-        # prepare BlocksContext payload (match your BlocksContext.create signature)
-        # the C# code sets tenantId to apiKey (blocks header), but we will set actualTenantId to apiKey and tenantId to it as well
-        api_key = request.headers.get("blocks-key", "")  # C# used header BlocksConstants.BlocksKey
+        api_key = request.headers.get("x-blocks-key", "")  # C# used header BlocksConstants.BlocksKey
 
         # Create BlocksContext (you might have a factory method; adapt as needed)
-        blocks_ctx = BlocksContext.create(
+        blocks_ctx = BlocksContextManager.create(
             tenant_id=api_key,
-            roles=roles,
+            roles= roles,
             user_id=user_id,
             is_authenticated=True,
             request_uri=str(request.url),
             organization_id="",
-            expire_on=expire_on,
             email=email or "",
             permissions=[],
             user_name=user_name or "",
             phone_number="",
             display_name=display_name or "",
             oauth_token=payload.get("oauth", None),
-            actual_tent_id=api_key
+            actual_tenant_id=api_key
         )
 
         BlocksContextManager.set_context(blocks_ctx)
