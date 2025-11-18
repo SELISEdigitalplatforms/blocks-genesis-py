@@ -7,7 +7,7 @@ import base64
 import aiohttp
 import asyncio
 import jwt
-from jwt import InvalidTokenError, PyJWKClient
+from jwt import ExpiredSignatureError, InvalidTokenError, PyJWKClient
 
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.hazmat.primitives import serialization
@@ -119,12 +119,19 @@ async def authenticate(request: Request, tenant_service: TenantService, cache_cl
         Activity.set_current_property("baggage.IsAuthenticate", "true")
         
         return extended_payload
+    except ExpiredSignatureError as e:
+      print(f"JWT expired: {e}")
+      raise HTTPException(401, "Token expired")
+    
     except InvalidTokenError as e:
-        print(f"JWT verification failed: {e} try with third party token")
-        validationReust = await try_fallback_async(request=request, token=token, tenant=tenant, db_context=DbContext.get_provider())
-        if not validationReust:
-         raise HTTPException(401, f"Invalid token: {e}")
-        return validationReust
+     print(f"JWT verification failed: {e}, trying fallback...")
+
+     validation_result = await try_fallback_async(request=request, token=token,tenant=tenant, db_context=DbContext.get_provider())
+
+     if not validation_result:
+        raise HTTPException(401, f"Invalid token: {e}")
+
+     return validation_result
 
     
 
