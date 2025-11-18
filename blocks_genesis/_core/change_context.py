@@ -83,7 +83,7 @@ async def apply_third_party_context(request: Request):
         phone_number=context_dict.get("phone_number", ""),
         display_name=context_dict.get("display_name", ""),
         oauth_token=context_dict.get("oauth_token", ""),
-        actual_tenant_id=context_dict.get("tenant_id", "")
+        actual_tenant_id=context_dict.get("actual_tent_id", "")
     )
 
     BlocksContextManager.set_context(new_context)
