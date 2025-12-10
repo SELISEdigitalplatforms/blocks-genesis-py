@@ -151,9 +151,7 @@ class RedisClient(CacheClient):
                 
                 self._sync_client.hset(key, mapping=value)
                 if key_life_span is not None:
-                    expire_time = datetime.utcnow() + timedelta(seconds=key_life_span)
-                    result = self._sync_client.expireat(key, expire_time)
-                    success = bool(result)
+                    success = bool(self._sync_client.expire(key, key_life_span))
                 else:
                     success = True
                 
@@ -257,9 +255,7 @@ class RedisClient(CacheClient):
                 
                 await client.hset(key, mapping=value)
                 if key_life_span is not None:
-                    expire_time = datetime.utcnow() + timedelta(seconds=key_life_span)
-                    result = await client.expireat(key, expire_time)
-                    success = bool(result)
+                    success = bool(await client.expire(key, key_life_span))
                 else:
                     success = True
                 
