@@ -7,9 +7,10 @@ from blocks_genesis._tenant.tenant_service import get_tenant_service
 from motor.motor_asyncio import AsyncIOMotorCollection
 
 
-async def change_context(request: Request, project_key: str):
+async def change_context(project_key: str, request: Request | None = None):
     # STEP 1: Read third-party context header (same as C#)
-    await apply_third_party_context(request)
+    if request:
+        await apply_third_party_context(request)
 
     # After third-party context applied, read the current context
     context = BlocksContextManager.get_context()
