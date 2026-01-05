@@ -1,8 +1,10 @@
+import asyncio
 from dataclasses import dataclass
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from blocks_genesis._auth.auth import authorize
 from blocks_genesis._core.api import close_lifespan, configure_lifespan, configure_middlewares, fast_api_app
@@ -69,7 +71,25 @@ async def health():
         "secrets_status": "loaded" ,
     }
     
-  
+async def gen(message: str):
+    for i in range(5):
+        yield f"data: {message} {i}\n\n"
+        await asyncio.sleep(1)
+        
+class Input(BaseModel):
+    message: str
+
+@app.post("/sse") #python -m uvicorn api:app --reload
+async def sse(data: Input):
+    return StreamingResponse(
+        gen(data.message),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+ 
     
 
 class AiMessage(BaseModel):

@@ -1,6 +1,5 @@
 import logging
 from fastapi import FastAPI, Request, logger
-from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.routing import APIRoute
 from starlette.middleware.cors import CORSMiddleware
@@ -76,7 +75,7 @@ def configure_middlewares(app: FastAPI, show_docs: bool = False):
     app.add_middleware(GZipMiddleware)
     app.add_middleware(TenantValidationMiddleware)
     app.add_middleware(GlobalExceptionHandlerMiddleware)
-    FastAPIInstrumentor.instrument_app(app)  ### Instrument FastAPI for OpenTelemetry
+    FastAPIInstrumentor.instrument_app(app)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
