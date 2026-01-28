@@ -1,0 +1,8 @@
+{
+    "name": "@selise/lmt-blocks",
+    "main": "dist/logger.js",
+    "exports": {
+        "./logger": "./dist/logger.js",
+        "./tracer": "./dist/tracer.js"
+    }
+}
