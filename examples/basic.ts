@@ -1,5 +1,5 @@
 import express from "express";
-import { configureLogger, configureTracing, Activity } from "@selise/lmt-blocks";
+import { configureLogger, configureTracing, Activity } from "../src";
 
 const logger = configureLogger({
   blocksKey: "default-tenant",
