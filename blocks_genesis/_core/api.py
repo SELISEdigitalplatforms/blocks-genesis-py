@@ -6,13 +6,14 @@ from starlette.middleware.cors import CORSMiddleware
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from blocks_genesis._cache.cache_provider import CacheProvider
 from blocks_genesis._cache.redis_client import RedisClient
-from blocks_genesis._core.secret_loader import SecretLoader
+from blocks_genesis._core.secret_loader import SecretLoader, get_blocks_secret
 from blocks_genesis._database.db_context import DbContext
 from blocks_genesis._database.mongo_context import MongoDbContextProvider
 from blocks_genesis._lmt.log_config import configure_logger
 from blocks_genesis._lmt.mongo_log_exporter import MongoHandler
 from blocks_genesis._lmt.tracing import configure_tracing
 from blocks_genesis._message.azure.azure_message_client import AzureMessageClient
+from blocks_genesis._message.rabbit_mq.rabbit_message_client import RabbitMessageClient
 from blocks_genesis._message.message_configuration import MessageConfiguration
 from blocks_genesis._middlewares.global_exception_middleware import GlobalExceptionHandlerMiddleware
 from blocks_genesis._middlewares.tenant_middleware import TenantValidationMiddleware
@@ -41,7 +42,13 @@ async def configure_lifespan(name: str, message_config: MessageConfiguration):
     await initialize_tenant_service()
     DbContext.set_provider(MongoDbContextProvider())
     
-    AzureMessageClient.initialize(message_config)
+    if message_config is not None:
+        message_config.connection = message_config.connection or get_blocks_secret().MessageConnectionString
+        message_config.resolve_provider()
+        if message_config.rabbit_mq_configuration is not None:
+            RabbitMessageClient.initialize(message_config)
+        if message_config.azure_service_bus_configuration is not None:
+            AzureMessageClient.initialize(message_config)
 
 
 
@@ -64,8 +71,15 @@ def fast_api_app(lifespan, **kwargs: FastAPI) -> FastAPI:
     
 async def close_lifespan():
     logger.info("Shutting down services...")
-    
-    await AzureMessageClient.get_instance().close()
+
+    try:
+        await RabbitMessageClient.get_instance().close()
+    except RuntimeError:
+        pass
+    try:
+        await AzureMessageClient.get_instance().close()
+    except RuntimeError:
+        pass
     # Shutdown logic
     if hasattr(MongoHandler, '_mongo_logger') and MongoHandler._mongo_logger:
         MongoHandler._mongo_logger.stop()
