@@ -21,6 +21,7 @@ dependencies = [
     "opentelemetry-instrumentation-redis>=0.54b1",
     "aiohttp>=3.12.9",
     "azure-servicebus>=7.14.2",
+    "aio-pika>=9.0.0",
     "cors>=1.0.1",
 ]
 
