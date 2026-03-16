@@ -12,6 +12,8 @@ from blocks_genesis._database.mongo_context import MongoDbContextProvider
 from blocks_genesis._message.azure.azure_message_client import AzureMessageClient
 from blocks_genesis._message.azure.azure_message_worker import AzureMessageWorker
 from blocks_genesis._message.azure.config_azure_service_bus import ConfigAzureServiceBus
+from blocks_genesis._message.rabbit_mq.rabbit_message_client import RabbitMessageClient
+from blocks_genesis._message.rabbit_mq.rabbit_message_worker import RabbitMessageWorker
 from blocks_genesis._message.event_registry import EventRegistry
 from blocks_genesis._message.message_configuration import MessageConfiguration
 from blocks_genesis._lmt.log_config import configure_logger
@@ -33,7 +35,7 @@ class WorkerConsoleApp:
                 Handlers can be callables or classes with a 'handle' method.
                 Defaults to an empty dictionary if not provided.
         """
-        self.message_worker: AzureMessageWorker = None
+        self.message_worker = None
         self.name = name
         self.logger = logging.getLogger(__name__)
         self.message_config = message_config
@@ -76,13 +78,21 @@ class WorkerConsoleApp:
 
             
             self.message_config.connection = self.message_config.connection or get_blocks_secret().MessageConnectionString
-            ConfigAzureServiceBus().configure_queue_and_topic(self.message_config)
-            AzureMessageClient.initialize(self.message_config)
+            self.message_config.resolve_provider()
 
-            self.message_worker = AzureMessageWorker(self.message_config)
-            self.message_worker.initialize()
+            if self.message_config.rabbit_mq_configuration is not None:
+                RabbitMessageClient.initialize(self.message_config)
+                self.message_worker = RabbitMessageWorker(self.message_config)
+                self.message_worker.initialize()
+                self.logger.info("RabbitMQ Message Worker initialized and ready")
 
-            self.logger.info("Azure Message Worker initialized and ready")
+            if self.message_config.azure_service_bus_configuration is not None:
+                ConfigAzureServiceBus().configure_queue_and_topic(self.message_config)
+                AzureMessageClient.initialize(self.message_config)
+                self.message_worker = AzureMessageWorker(self.message_config)
+                self.message_worker.initialize()
+                self.logger.info("Azure Message Worker initialized and ready")
+
             yield self.message_worker
 
         except Exception as ex:
@@ -100,9 +110,9 @@ class WorkerConsoleApp:
         self.logger.info("Cleaning up services...")
 
         if self.message_worker:
-            self.logger.info("Stopping Azure Message Worker...")
+            self.logger.info("Stopping Message Worker...")
             await self.message_worker.stop()
-            self.logger.info("Azure Message Worker stopped.")
+            self.logger.info("Message Worker stopped.")
 
         if hasattr(MongoHandler, '_mongo_logger') and MongoHandler._mongo_logger:
             self.logger.info("Stopping Mongo log exporter...")

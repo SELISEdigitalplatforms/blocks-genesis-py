@@ -5,6 +5,7 @@ from dataclasses import asdict, is_dataclass
 from typing import Any, Dict, Optional
 
 from asyncio import Lock
+from pydantic import BaseModel
 from collections import defaultdict
 from datetime import datetime
 from azure.servicebus.aio import ServiceBusClient, ServiceBusSender
@@ -43,6 +44,7 @@ class AzureMessageClient(MessageClient):
         with cls._singleton_lock:
             if cls._instance is None:
                 cls._instance = cls(message_config)
+                MessageClient.set_active_instance(cls._instance)
                 logger.info("AzureMessageClient singleton initialized.")
 
     @classmethod
@@ -109,10 +111,26 @@ class AzureMessageClient(MessageClient):
                 }
             )
 
-            await sender.send_messages(sb_message)
+            try:
+                await sender.send_messages(sb_message)
+                logger.info(
+                    "Message published to Azure Service Bus %s '%s'",
+                    "topic" if is_topic else "queue",
+                    consumer_message.consumer_name,
+                )
+                return True
+            except Exception as ex:
+                logger.error(
+                    "Failed to publish message to Azure Service Bus '%s': %s",
+                    consumer_message.consumer_name,
+                    str(ex),
+                )
+                raise
 
     def _serialize_payload(self, payload):
-        if is_dataclass(payload):
+        if isinstance(payload, BaseModel):
+            return payload.model_dump()
+        elif is_dataclass(payload):
             return asdict(payload)
         elif isinstance(payload, dict):
             return payload
@@ -121,11 +139,11 @@ class AzureMessageClient(MessageClient):
         else:
             raise TypeError(f"Unsupported payload type: {type(payload)}")
 
-    async def send_to_consumer_async(self, consumer_message: ConsumerMessage):
-        await self._send_to_azure_bus_async(consumer_message)
+    async def send_to_consumer_async(self, consumer_message: ConsumerMessage) -> bool:
+        return await self._send_to_azure_bus_async(consumer_message)
 
-    async def send_to_mass_consumer_async(self, consumer_message: ConsumerMessage):
-        await self._send_to_azure_bus_async(consumer_message, is_topic=True)
+    async def send_to_mass_consumer_async(self, consumer_message: ConsumerMessage) -> bool:
+        return await self._send_to_azure_bus_async(consumer_message, is_topic=True)
 
     async def close(self):
         await self._client.close()
