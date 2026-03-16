@@ -1,9 +1,44 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.9"
 resolution-markers = [
     "python_full_version >= '3.10'",
     "python_full_version < '3.10'",
+]
+
+[[package]]
+name = "aio-pika"
+version = "9.5.6"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version < '3.10'",
+]
+dependencies = [
+    { name = "aiormq", version = "6.8.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "exceptiongroup", marker = "python_full_version < '3.10'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.10'" },
+    { name = "yarl", marker = "python_full_version < '3.10'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/59/52/fe35c898bce5cc8af839ba786b38f7db8932aac48a67ba8ca7de3b074e07/aio_pika-9.5.6.tar.gz", hash = "sha256:5013f429e1235e1ce8df054a821e0eea140ea9afc94a09725b96590ea2dad001", size = 47308, upload-time = "2025-08-05T14:18:35.949Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ec/fb/c1cfb7cb98ccd2abdc91e170e7ba0e1e3088b6a9d051e4f2899d3249a231/aio_pika-9.5.6-py3-none-any.whl", hash = "sha256:47b532419185cf1105ae18daa45a5052ff98064915c5e080b2433431fe808193", size = 54303, upload-time = "2025-08-05T14:18:34.62Z" },
+]
+
+[[package]]
+name = "aio-pika"
+version = "9.6.1"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.10'",
+]
+dependencies = [
+    { name = "aiormq", version = "6.9.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+    { name = "exceptiongroup", marker = "python_full_version == '3.10.*'" },
+    { name = "yarl", marker = "python_full_version >= '3.10'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0e/3e/8e8513214ed7ceed6bad8b71f7fe196d54ef2277c135bf7960ed715d4227/aio_pika-9.6.1.tar.gz", hash = "sha256:7a130c51a413cfcd04c3322f6a0ab08c38eb9918de1e476f6d34bbf41fc8d2b0", size = 66809, upload-time = "2026-02-23T15:41:52.544Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2b/24/59a1644995f7a0245588a1761d4b515fc63b7a6038310ead2b07eb44cd8b/aio_pika-9.6.1-py3-none-any.whl", hash = "sha256:0fda50fbbdeb6c5b7399730a2286751074dfe6e52a20119a71aef112d4863fd1", size = 52022, upload-time = "2026-02-23T15:41:51.357Z" },
 ]
 
 [[package]]
@@ -116,6 +151,38 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/88/16/70c4e42ed6a04f78fb58d1a46500a6ce560741d13afde2a5f33840746a5f/aiohttp-3.12.15-cp39-cp39-musllinux_1_2_x86_64.whl", hash = "sha256:14954a2988feae3987f1eb49c706bff39947605f4b6fa4027c1d75743723eb09", size = 1640539, upload-time = "2025-07-29T05:52:25.733Z" },
     { url = "https://files.pythonhosted.org/packages/fe/1d/a7eb5fa8a6967117c5c0ad5ab4b1dec0d21e178c89aa08bc442a0b836392/aiohttp-3.12.15-cp39-cp39-win32.whl", hash = "sha256:b784d6ed757f27574dca1c336f968f4e81130b27595e458e69457e6878251f5d", size = 430164, upload-time = "2025-07-29T05:52:27.905Z" },
     { url = "https://files.pythonhosted.org/packages/14/25/e0cf8793aedc41c6d7f2aad646a27e27bdacafe3b402bb373d7651c94d73/aiohttp-3.12.15-cp39-cp39-win_amd64.whl", hash = "sha256:86ceded4e78a992f835209e236617bffae649371c4a50d5e5a3987f237db84b8", size = 453370, upload-time = "2025-07-29T05:52:29.936Z" },
+]
+
+[[package]]
+name = "aiormq"
+version = "6.8.1"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version < '3.10'",
+]
+dependencies = [
+    { name = "pamqp", marker = "python_full_version < '3.10'" },
+    { name = "yarl", marker = "python_full_version < '3.10'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a4/79/5397756a8782bf3d0dce392b48260c3ec81010f16bef8441ff03505dccb4/aiormq-6.8.1.tar.gz", hash = "sha256:a964ab09634be1da1f9298ce225b310859763d5cf83ef3a7eae1a6dc6bd1da1a", size = 30528, upload-time = "2024-09-04T11:16:38.655Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2e/be/1a613ae1564426f86650ff58c351902895aa969f7e537e74bfd568f5c8bf/aiormq-6.8.1-py3-none-any.whl", hash = "sha256:5da896c8624193708f9409ffad0b20395010e2747f22aa4150593837f40aa017", size = 31174, upload-time = "2024-09-04T11:16:37.238Z" },
+]
+
+[[package]]
+name = "aiormq"
+version = "6.9.3"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.10'",
+]
+dependencies = [
+    { name = "pamqp", marker = "python_full_version >= '3.10'" },
+    { name = "yarl", marker = "python_full_version >= '3.10'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a2/b0/85cb8066acc2df8166f743bdcd793e7179f473a7db746a543bcd40fdac7b/aiormq-6.9.3.tar.gz", hash = "sha256:39f57d85650267aebefca162a523e9e000db02468d4fceccb3c5399f378ddabe", size = 45672, upload-time = "2026-02-22T21:04:49.745Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/70/9b/be86ea5a73010b437bb5f9511d1fcbb828cdf8eddde0c6f2b38006b9ce92/aiormq-6.9.3-py3-none-any.whl", hash = "sha256:fe2e9f7c99d24dde5f7e1ca8a7da2dc5bab9ae5758fd7599b60d34b6b278926e", size = 27939, upload-time = "2026-02-22T21:04:48.208Z" },
 ]
 
 [[package]]
@@ -1268,6 +1335,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pamqp"
+version = "3.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fb/62/35bbd3d3021e008606cd0a9532db7850c65741bbf69ac8a3a0d8cfeb7934/pamqp-3.3.0.tar.gz", hash = "sha256:40b8795bd4efcf2b0f8821c1de83d12ca16d5760f4507836267fd7a02b06763b", size = 30993, upload-time = "2024-01-12T20:37:25.085Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ac/8d/c1e93296e109a320e508e38118cf7d1fc2a4d1c2ec64de78565b3c445eb5/pamqp-3.3.0-py2.py3-none-any.whl", hash = "sha256:c901a684794157ae39b52cbf700db8c9aae7a470f13528b9d7b4e5f7202f8eb0", size = 33848, upload-time = "2024-01-12T20:37:21.359Z" },
+]
+
+[[package]]
 name = "pluggy"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1751,9 +1827,11 @@ wheels = [
 
 [[package]]
 name = "seliseblocks-genesis"
-version = "0.2.17"
+version = "0.2.24"
 source = { editable = "." }
 dependencies = [
+    { name = "aio-pika", version = "9.5.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "aio-pika", version = "9.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "aiohttp" },
     { name = "azure-identity" },
     { name = "azure-keyvault-secrets" },
@@ -1781,6 +1859,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aio-pika", specifier = ">=9.0.0" },
     { name = "aiohttp", specifier = ">=3.12.9" },
     { name = "azure-identity", specifier = ">=1.7.0" },
     { name = "azure-keyvault-secrets", specifier = ">=4.3.0" },
