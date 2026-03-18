@@ -1,6 +1,6 @@
 [project]
 name = "seliseblocks-lmt"
-version = "0.0.3"
+version = "0.0.4"
 readme = "README.md"
 description = "Logging, Monitoring, and Tracing library for Selise Blocks applications using Azure Service Bus and RabbitMQ."
 authors = [{name="Selise Blocks", email="mostafizur.rahman@selisegroup.com"}]
