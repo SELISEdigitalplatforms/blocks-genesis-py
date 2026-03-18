@@ -75,3 +75,9 @@ def sample_x_blocks_key():
 def sample_service_id():
     """Sample service ID for testing."""
     return "test-service"
+
+
+@pytest.fixture
+def sample_rabbitmq_connection_string():
+    """Sample RabbitMQ connection string for testing."""
+    return "amqp://guest:guest@localhost:5672/"

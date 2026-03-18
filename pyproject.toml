@@ -2,11 +2,12 @@
 name = "seliseblocks-lmt"
 version = "0.0.3"
 readme = "README.md"
-description = "Logging, Monitoring, and Tracing library for Selise Blocks applications using Azure Service Bus."
+description = "Logging, Monitoring, and Tracing library for Selise Blocks applications using Azure Service Bus and RabbitMQ."
 authors = [{name="Selise Blocks", email="mostafizur.rahman@selisegroup.com"}]
-keywords = ["Selise", "Selise Blocks", "LMT", "Logging", "Monitoring", "Tracing", "Azure Service Bus", "OpenTelemetry"]
+keywords = ["Selise", "Selise Blocks", "LMT", "Logging", "Monitoring", "Tracing", "Azure Service Bus", "RabbitMQ", "OpenTelemetry"]
 dependencies = [
     "azure-servicebus>=7.14.2",
+    "aio-pika>=9.0.0",
     "opentelemetry-api>=1.33.1",
     "opentelemetry-sdk>=1.33.1",
     "opentelemetry-instrumentation-fastapi>=0.54b1",
