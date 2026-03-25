@@ -17,7 +17,7 @@ jobs:
   initialization:
     runs-on: ubuntu-latest
     outputs:
-      envvalue2: ${{ steps.setvar.outputs.envvar2 }}
+      envvalue1: ${{ steps.setvar.outputs.envvar1 }}
     steps:
       - name: set value
         id: setvar
