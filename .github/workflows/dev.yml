@@ -1,0 +1,34 @@
+name: sonarqube analysis
+
+on:
+  push:
+    branches:
+      - dev
+      - sonar
+      - main
+  pull_request:
+    branches:
+      - dev
+      - sonar
+      - main
+
+env:
+  RUN_SONARQUBE: "true"
+
+jobs:
+  initialization:
+    runs-on: ubuntu-latest
+    outputs:
+      envvalue1: ${{ steps.setvar.outputs.envvar1 }}
+    steps:
+      - name: set value
+        id: setvar
+        run: |
+          echo "::set-output name=envvar1::$RUN_SONARQUBE"
+
+  sonarqube-job:
+    if: ${{ success() && needs.initialization.outputs.envvalue1=='true' }}
+    uses: ./.github/workflows/2_sonar.yml
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN_GLOBAL }}
+    needs: [initialization]

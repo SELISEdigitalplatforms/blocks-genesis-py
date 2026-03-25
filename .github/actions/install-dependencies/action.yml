@@ -1,0 +1,18 @@
+name: Install dependencies
+description: Installs dependencies for the python project
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        # Install a specific version of uv.
+        version: "0.5.26"
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        uv sync
