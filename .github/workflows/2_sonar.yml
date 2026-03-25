@@ -44,10 +44,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install pytest pytest-cov
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f pyproject.toml ]; then pip install .; fi
 
       - name: Run tests with coverage
         run: |
-          pytest --cov=. --cov-report=xml
+          python -m pytest --cov=. --cov-report=xml
 
       - uses: sonarsource/sonarqube-scan-action@master
         env:
