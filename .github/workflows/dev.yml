@@ -1,14 +1,16 @@
-name: Build (dev)
+name: sonarqube analysis
 
 on:
   push:
     branches:
       - dev
       - sonar
+      - main
   pull_request:
     branches:
       - dev
       - sonar
+      - main
 
 env:
   RUN_SONARQUBE: "true"
