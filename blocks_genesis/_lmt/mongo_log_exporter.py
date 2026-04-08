@@ -17,26 +17,87 @@ class MongoBatchLogger:
         # Lazy initialization of MongoDB connection
         mongo_client = MongoClient(self.blocks_secret.LogConnectionString)
         db = mongo_client[self.blocks_secret.LogDatabaseName]
+        collection_name = self.blocks_secret.ServiceName
 
-        if self.blocks_secret.ServiceName not in db.list_collection_names():
-            db.create_collection(
-                self.blocks_secret.ServiceName,
-                timeseries={
-                    "timeField": "Timestamp",
-                    "metaField": "TenantId",
-                    "granularity": "minutes"
-                }
-            )
-            db[self.blocks_secret.ServiceName].create_index(
-                [("TenantId", ASCENDING), ("Timestamp", DESCENDING)],
-                name="Tenant_Timestamp_Index"
-            )
+        self._create_collection_for_logs(db, collection_name)
 
-        self.collection = db[self.blocks_secret.ServiceName]
+        self.collection = db[collection_name]
         self.queue = Queue()
         self._stop_event = threading.Event()
         self.worker_thread = threading.Thread(target=self._background_worker, daemon=True)
         self.worker_thread.start()
+
+    def _create_collection_for_logs(self, db, collection_name: str):
+        try:
+            self._create_collection_if_not_exists(db, collection_name)
+            self._create_index_if_needed(db, collection_name)
+        except Exception as ex:
+            # Keep startup resilient; logger handler should not crash app bootstrap.
+            print(ex)
+
+    def _create_collection_if_not_exists(self, db, collection_name: str):
+        try:
+            collection_exists = self._collection_exists(db, collection_name)
+            if not collection_exists:
+                db.create_collection(
+                    collection_name,
+                    timeseries={
+                        "timeField": "Timestamp",
+                        "metaField": "TenantId",
+                        "granularity": "minutes",
+                    },
+                    expireAfterSeconds=90 * 24 * 60 * 60,
+                )
+                return
+
+            if not self._is_time_series_collection(db, collection_name):
+                db.drop_collection(collection_name)
+                db.create_collection(
+                    collection_name,
+                    timeseries={
+                        "timeField": "Timestamp",
+                        "metaField": "TenantId",
+                        "granularity": "minutes",
+                    },
+                    expireAfterSeconds=90 * 24 * 60 * 60,
+                )
+        except Exception:
+            raise
+
+    def _collection_exists(self, db, collection_name: str) -> bool:
+        collections = db.list_collection_names(filter={"name": collection_name})
+        return bool(collections)
+
+    def _is_time_series_collection(self, db, collection_name: str) -> bool:
+        collection_info = next(db.list_collections(filter={"name": collection_name}), None)
+        return bool(collection_info and collection_info.get("type") == "timeseries")
+
+    def _create_index_if_needed(self, db, collection_name: str):
+        index_name = f"{collection_name}_Index"
+        collection = db[collection_name]
+        expected_key = [("TenantId", 1), ("Timestamp", -1)]
+
+        try:
+            existing_indexes = list(collection.list_indexes())
+
+            index_with_same_name_exists = any(
+                idx.get("name") == index_name for idx in existing_indexes
+            )
+            index_with_same_keys_exists = any(
+                idx.get("name") != "_id_" and list(idx.get("key", {}).items()) == expected_key
+                for idx in existing_indexes
+            )
+
+            if not index_with_same_name_exists and not index_with_same_keys_exists:
+                collection.create_index(
+                    [("TenantId", ASCENDING), ("Timestamp", DESCENDING)],
+                    name=index_name,
+                    partialFilterExpression={"TenantId": {"$exists": True}},
+                )
+        except Exception as ex:
+            if "Index already exists with a different name" in str(ex):
+                return
+            raise
 
     def enqueue(self, record: logging.LogRecord):
         doc = {
@@ -59,7 +120,7 @@ class MongoBatchLogger:
             except Empty:
                 pass
 
-            if batch or self._stop_event.is_set():
+            if batch and (len(batch) >= self.batch_size or self._stop_event.is_set()):
                 try:
                     self.collection.insert_many(batch)
                 except Exception as e:
@@ -98,7 +159,6 @@ class TraceContextFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         """Add trace context to log records."""
         record.TenantId = BlocksContextManager.get_context().tenant_id if BlocksContextManager.get_context() else "miscellaneous"
-        print(f"[TraceContextFilter] TenantId: {record.TenantId}")
         record.TraceId = Activity.get_trace_id()
         record.SpanId = Activity.get_span_id()
         return True

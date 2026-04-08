@@ -7,8 +7,8 @@ uv add --dev twine
 pip install twine
 
 # 3. If successful, upload to PyPI
-python -m twine upload dist/*
+uv run -- python -m twine upload dist/*
 
 # With token directly
-python -m twine upload dist/* --username __token__ --password pypi-your_pypi_token
+uv run -- python -m twine upload dist/* --username __token__ --password pypi-your_pypi_token
 
