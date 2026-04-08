@@ -1,4 +1,5 @@
 import pytest
+import asyncio
 from unittest.mock import AsyncMock, patch, MagicMock
 from blocks_genesis._tenant import tenant_service
 
@@ -14,11 +15,10 @@ async def test_tenant_service_init(mock_motor, mock_cache_provider, mock_get_sec
     assert service.database is not None
 
 @pytest.mark.asyncio
-@patch('blocks_genesis._tenant.tenant_service.TenantService._load_tenants', new_callable=AsyncMock)
 @patch('blocks_genesis._tenant.tenant_service.CacheProvider')
 @patch('blocks_genesis._tenant.tenant_service.get_blocks_secret')
 @patch('blocks_genesis._tenant.tenant_service.AsyncIOMotorClient')
-async def test_initialize(mock_motor, mock_get_secret, mock_cache_provider, mock_load_tenants):
+async def test_initialize(mock_motor, mock_get_secret, mock_cache_provider):
     mock_get_secret.return_value.DatabaseConnectionString = 'conn'
     mock_get_secret.return_value.RootDatabaseName = 'rootdb'
     mock_cache_provider.get_client.return_value = MagicMock()
@@ -43,6 +43,29 @@ async def test_get_tenant(mock_motor, mock_cache_provider, mock_get_secret, mock
     # Found in cache
     tenant2 = await service.get_tenant('tid')
     assert tenant2 is not None
+
+
+@pytest.mark.asyncio
+async def test_get_tenant_deduplicates_concurrent_loads():
+    service = tenant_service.TenantService.__new__(tenant_service.TenantService)
+    service._tenant_cache = {}
+    service._tenant_load_in_progress = {}
+    service._tenant_load_lock = asyncio.Lock()
+
+    async def load_once(_tenant_id):
+        await asyncio.sleep(0.01)
+        return MagicMock(tenant_id='tid')
+
+    service._load_tenant_from_db = AsyncMock(side_effect=load_once)
+
+    tenant1, tenant2 = await asyncio.gather(
+        service.get_tenant('tid'),
+        service.get_tenant('tid')
+    )
+
+    assert tenant1 is not None
+    assert tenant2 is not None
+    service._load_tenant_from_db.assert_awaited_once_with('tid')
 
 @pytest.mark.asyncio
 @patch('blocks_genesis._tenant.tenant_service.get_blocks_secret')
@@ -70,26 +93,12 @@ async def test_get_db_connection(mock_get_tenant):
     assert conn == 'conn'
 
 @pytest.mark.asyncio
-def test__load_tenants():
-    service = tenant_service.TenantService.__new__(tenant_service.TenantService)
-    mock_db = MagicMock()
-    mock_cursor = AsyncMock()
-    mock_cursor.__aiter__.return_value = [{"TenantId": "tid", "JwtTokenParameters": {}}]
-    mock_db.__getitem__.return_value.find.return_value = mock_cursor
-    service.database = mock_db
-    service._tenant_cache = {}
-    import asyncio
-    async def run():
-        await service._load_tenants()
-        assert 'tid' in service._tenant_cache
-    asyncio.run(run())
-
-@pytest.mark.asyncio
 def test__load_tenant_from_db():
     service = tenant_service.TenantService.__new__(tenant_service.TenantService)
     mock_db = MagicMock()
     mock_db.__getitem__.return_value.find_one = AsyncMock(return_value={'TenantId': 'tid', 'JwtTokenParameters': {}})
     service.database = mock_db
+    service._collection_name = 'Tenants'
     import asyncio
     async def run():
         tenant = await service._load_tenant_from_db('tid')
@@ -102,6 +111,7 @@ def test__subscribe_to_updates():
     mock_cache = MagicMock()
     mock_cache.subscribe_async = AsyncMock()
     service.cache = mock_cache
+    service._is_subscribed = False
     service._update_channel = 'chan'
     service._handle_update = AsyncMock()
     import asyncio
@@ -113,11 +123,16 @@ def test__subscribe_to_updates():
 @pytest.mark.asyncio
 def test__handle_update():
     service = tenant_service.TenantService.__new__(tenant_service.TenantService)
-    service._load_tenants = AsyncMock()
+    parsed = tenant_service.TenantCacheUpdateMessage(action='upsert', tenant_id='tid')
+    normalized = tenant_service.TenantCacheUpdateMessage(action='upsert', tenant_id='tid')
+    service._parse_tenant_cache_update = MagicMock(return_value=parsed)
+    service._normalize_cache_update = MagicMock(return_value=normalized)
+    service._resolve_tenant_id = MagicMock(return_value="tid")
+    service._apply_update_message = AsyncMock()
     import asyncio
     async def run():
         await service._handle_update('chan', 'msg')
-        service._load_tenants.assert_awaited()
+        service._apply_update_message.assert_awaited_once()
     asyncio.run(run())
 
 def test_get_tenant_service_and_initialize(monkeypatch):
