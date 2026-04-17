@@ -55,32 +55,32 @@ Key use cases:
 +--------------------------------------------------------------+
 |                    Client / Upstream Apps                    |
 +--------------------------------------------------------------+
-															|
-															v
+                               |
+                               v
 +--------------------------------------------------------------+
 |                 FastAPI Service (api.py, /api)               |
 |  Routes: / /health /sse /ping /swagger/index.html /openapi   |
 +--------------------------------------------------------------+
-								|                     |                    |
-								v                     v                    v
+          |                    |                    |
+          v                    v                    v
 +---------------------------+ +-------------------+ +--------------------+
 | Tenant + Auth Pipeline    | | Message Client    | | Observability      |
 | x-blocks-key + JWT checks | | Azure or RabbitMQ | | OTel + Mongo export|
 +---------------------------+ +-------------------+ +--------------------+
-								|                     |                    |
-								v                     v                    v
+          |                    |                    |
+          v                    v                    v
 +---------------------------+ +-------------------+ +--------------------+
 | Redis Cache               | | Broker Infra      | | Mongo Logs/Traces  |
-| CacheConnectionString     | | Service Bus/RMQ   | | Log/Trace DB        |
+| CacheConnectionString     | | Service Bus/RMQ   | | Log/Trace DB       |
 +---------------------------+ +-------------------+ +--------------------+
-								|
-								v
+          |
+          v
 +--------------------------------------------------------------+
 |           MongoDB Tenant Databases + Root Tenant DB          |
 |         DatabaseConnectionString + RootDatabaseName          |
 +--------------------------------------------------------------+
-															|
-															v
+                               |
+                               v
 +--------------------------------------------------------------+
 |                   Worker Service (worker.py)                 |
 |        Event consumers via WorkerConsoleApp lifecycle        |
