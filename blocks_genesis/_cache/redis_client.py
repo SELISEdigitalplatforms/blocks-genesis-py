@@ -41,6 +41,15 @@ class RedisClient(CacheClient):
         
         config = redis.connection.parse_url(url)
 
+        # ---- FIX: support both 'user' and 'username' ----
+        # redis-py expects 'username', but some connection strings use 'user'
+        if 'username' not in config or not config.get('username'):
+            for part in connection_string.split(','):
+                part = part.strip()
+                if part.startswith('user='):
+                    config['username'] = part.split('=', 1)[1]
+                    break
+
         # Allowed keys for redis.Redis constructor
         allowed_keys = {
             'host', 'port', 'username', 'password', 'db', 'ssl', 
@@ -51,7 +60,6 @@ class RedisClient(CacheClient):
 
         # Map keys like connectTimeout -> socket_connect_timeout (in seconds)
         if 'connectTimeout' in config:
-            # convert from ms to seconds
             config['socket_connect_timeout'] = int(config.pop('connectTimeout')) / 1000
         if 'syncTimeout' in config:
             config['socket_timeout'] = int(config.pop('syncTimeout')) / 1000

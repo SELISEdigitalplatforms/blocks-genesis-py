@@ -6,7 +6,7 @@ from blocks_genesis._tenant.tenant import Tenant
 from blocks_genesis._tenant.tenant_service import TenantService, get_tenant_service
 from blocks_genesis._message.azure.azure_message_client import AzureMessageClient
 from blocks_genesis._message.rabbit_mq.rabbit_message_client import RabbitMessageClient
-from blocks_genesis._core.api import close_lifespan, configure_lifespan, configure_middlewares, fast_api_app
+from blocks_genesis._core.api import close_lifespan, configure_lifespan, configure_genesis, fast_api_app
 from blocks_genesis._core.worker import WorkerConsoleApp
 from blocks_genesis._core.configuration import get_configurations, load_configurations
 from blocks_genesis._entities.base_entity import BaseEntity
@@ -35,7 +35,7 @@ __all__ = [
     "MessageConfiguration",
     "close_lifespan",
     "configure_lifespan",
-    "configure_middlewares",
+    "configure_genesis",
     "WorkerConsoleApp",
     "get_configurations",
     "load_configurations",
