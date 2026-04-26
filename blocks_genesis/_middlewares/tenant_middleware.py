@@ -19,14 +19,30 @@ async def tee_body_iterator(
         yield chunk
 
 
+
 class TenantValidationMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, included_paths=None):
+        """
+        Middleware to validate tenant only for requests whose path matches or starts with any of the included_paths.
+        By default, only /api endpoints are validated. You can pass a list of custom paths to include additional endpoints.
+
+        Example usage:
+            app.add_middleware(TenantValidationMiddleware, included_paths=["/api", "/custom"])
+        """
+        super().__init__(app)
+        # Only validate tenant for these paths (default: /api)
+        self.included_paths = included_paths or ["/api"]
+
+
 
     async def dispatch(self, request: Request, call_next):
-        excluded_paths = ["/ping", "/swagger/index.html", "/openapi.json"]
-        root_path = request.scope.get("root_path", "")
-        all_excluded = excluded_paths + [root_path + path for path in excluded_paths]
-
-        if request.url.path in all_excluded:
+        path = request.url.path
+        # Only apply tenant validation if path matches or starts with any included prefix
+        # Example: included_paths=["/api", "/custom"]
+        #   /api/foo  -> validated
+        #   /custom/bar -> validated
+        #   /public    -> not validated
+        if not any(path == p or path.startswith(p.rstrip("/ ") + "/") for p in self.included_paths):
             return await call_next(request)
 
         try:

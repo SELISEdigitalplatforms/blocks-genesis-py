@@ -5,9 +5,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from blocks_genesis._auth.auth import authorize
-from blocks_genesis._core.api import close_lifespan, configure_lifespan, configure_middlewares, fast_api_app
+from blocks_genesis._core.api import close_lifespan, configure_lifespan, configure_genesis, fast_api_app
 from blocks_genesis._core.configuration import get_configurations, load_configurations
 from blocks_genesis._database.db_context import DbContext
 from blocks_genesis._message.azure.azure_message_client import AzureMessageClient
@@ -41,14 +42,13 @@ async def lifespan(app: FastAPI):
 
 
 
-app = fast_api_app(lifespan=lifespan, root_path="/api")
 
+# Serve static files (frontend) from / if desired, or let configure_genesis handle it
+app = fast_api_app(lifespan=lifespan)
 
-# Add middleware in order
-configure_middlewares(app, show_docs=True)
-
-
-
+# Use the new configure_genesis function for all middleware and static setup
+from blocks_genesis._core.api import configure_genesis
+configure_genesis(app, show_docs=True, serve_static=True)
 
 @app.get("/")
 async def root():
