@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import re
 from typing import Dict, Optional, Tuple
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
@@ -98,15 +97,27 @@ class TenantService:
         return tenant
 
     async def get_tenant_by_domain(self, domain: str) -> Optional[Tenant]:
+        """Get tenant by application domain."""
         if not domain:
             return None
+
+        # Normalize domain to include https:// if not present
+        normalized_domain = domain if domain.startswith("https://") else f"https://{domain}"
+
+        # Check in-memory cache first
+        for tenant in self._tenant_cache.values():
+            if tenant.applications and any(
+                app.domain and app.domain.lower() == normalized_domain.lower()
+                for app in tenant.applications
+            ):
+                return tenant
+
+        # Query database if not found in cache
         try:
             tenant_dict = await self.database[self._collection_name].find_one({
-                "$or": [
-                    {"ApplicationDomain": domain},
-                    {"ApplicationDomain": {"$regex": re.compile(domain)}},
-                    {"AllowedDomains": {"$in": [domain]}}
-                ]
+                "Applications": {
+                    "$elemMatch": {"Domain": normalized_domain}
+                }
             })
             if tenant_dict:
                 tenant = Tenant(**tenant_dict)
@@ -121,6 +132,18 @@ class TenantService:
         if tenant:
             return tenant.db_name, tenant.db_connection_string
         return None, None
+
+    def get_tenant_database_connection_strings(self) -> Dict[str, Tuple[str, str]]:
+        """
+        Get all tenant database connection strings from cache.
+        Returns dictionary mapping tenant IDs to (db_name, connection_string) tuples.
+        
+        Matches .NET Tenants.GetTenantDatabaseConnectionStrings()
+        """
+        return {
+            tenant_id: (tenant.db_name, tenant.db_connection_string)
+            for tenant_id, tenant in self._tenant_cache.items()
+        }
 
     async def _load_tenant_from_db(self, tenant_id: str) -> Optional[Tenant]:
         try:

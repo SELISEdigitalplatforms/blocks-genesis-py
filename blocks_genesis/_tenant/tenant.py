@@ -58,6 +58,11 @@ class ThirdPartyJwtTokenParameters(BaseModel):
         extra = "ignore"
         validate_by_name = True
 
+class Application(BaseModel):
+    domain: Optional[str] = Field(alias="Domain", default="")
+    cookie_domain: str = Field(alias="CookieDomain", default="")
+    is_domain_verified: bool = Field(alias="IsDomainVerified", default=False)
+
 
 # ------------------------------
 # Tenant Entity
@@ -69,9 +74,7 @@ class Tenant(BaseEntity):
 
     name: Optional[str] = Field(alias="Name", default=None)
     db_name: str = Field(alias="DBName", default="")
-    application_domain: str = Field(alias="ApplicationDomain", default="")
-    allowed_domains: List[str] = Field(alias="AllowedDomains", default_factory=list)
-    cookie_domain: str = Field(alias="CookieDomain", default="")
+    applications: List[Application] = Field(alias="Applications", default_factory=list)
 
     is_disabled: bool = Field(alias="IsDisabled", default=False)
     db_connection_string: str = Field(alias="DbConnectionString", default="")
@@ -84,11 +87,9 @@ class Tenant(BaseEntity):
     )
 
     is_root_tenant: bool = Field(alias="IsRootTenant", default=False)
-    is_domain_verified: bool = Field(alias="IsDomainVerified", default=False)
 
     environment: Optional[str] = Field(alias="Environment", default="")
     tenant_group_id: Optional[str] = Field(alias="TenantGroupId", default="")
-    custom_domain: Optional[str] = Field(alias="CustomDomain", default="")
 
     class Config:
         extra = "ignore"
