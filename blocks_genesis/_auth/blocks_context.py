@@ -3,9 +3,10 @@ from datetime import datetime
 from typing import ClassVar, List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 import threading
+from urllib.parse import urlparse
 
 class BlocksContext(BaseModel):
-   # JWT Standard Claims
+    # JWT Standard Claims
     ISSUER_CLAIM: ClassVar[str] = "iss"
     AUDIENCES_CLAIM: ClassVar[str] = "aud"
     ISSUED_AT_TIME_CLAIM: ClassVar[str] = "iat"
@@ -20,6 +21,7 @@ class BlocksContext(BaseModel):
     REQUEST_URI_CLAIM: ClassVar[str] = "request_uri"
     TOKEN_CLAIM: ClassVar[str] = "oauth"
     PERMISSION_CLAIM: ClassVar[str] = "permissions"
+    SERVICE_ACCESS_CLAIM: ClassVar[str] = "service_access"
     ORGANIZATION_ID_CLAIM: ClassVar[str] = "org_id"
     EMAIL_CLAIM: ClassVar[str] = "email"
     USER_NAME_CLAIM: ClassVar[str] = "user_name"
@@ -41,6 +43,7 @@ class BlocksContext(BaseModel):
     phone_number: str = ""
     display_name: str = ""
     actual_tenant_id: str = ""
+    application_domain: str = ""  # Domain extracted from Origin/Referer headers
     
     class Config:
         arbitrary_types_allowed = True
@@ -61,9 +64,68 @@ class BlocksContextManager:
     def set_test_mode(value: bool) -> None:
         """Set test mode status (thread-safe)"""
         _test_mode.value = value
+
+    @staticmethod
+    def normalize_domain(url: str) -> str:
+        """Normalize URL/host to hostname only (no protocol, port, or path)."""
+        if not url or not str(url).strip():
+            return ""
+
+        raw = str(url).strip()
+        candidate = raw if "://" in raw else f"//{raw}"
+
+        try:
+            parsed = urlparse(candidate)
+            if parsed.hostname:
+                return parsed.hostname.strip().lower()
+        except Exception:
+            pass
+
+        return raw.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0].strip().lower()
+
+    @staticmethod
+    def is_localhost_host(host: Optional[str]) -> bool:
+        """Check whether host points to local development loopback addresses."""
+        normalized = BlocksContextManager.normalize_domain(host or "")
+        return normalized in {"localhost", "127.0.0.1", "::1"}
     
     @staticmethod
-    def create_from_jwt_claims(claims: Dict[str, Any]) -> BlocksContext:
+    def resolve_application_domain(request) -> Optional[str]:
+        """
+        Resolve application domain from request headers.
+        
+        Priority order:
+        1. Origin header
+        2. Referer header
+        3. Host header
+        
+        Returns domain without protocol (e.g., "example.com")
+        """
+        # Try Origin header first (CORS)
+        origin = request.headers.get("Origin")
+        if origin:
+            normalized = BlocksContextManager.normalize_domain(origin)
+            if normalized:
+                return normalized
+        
+        # Try Referer header
+        referer = request.headers.get("Referer")
+        if referer:
+            normalized = BlocksContextManager.normalize_domain(referer)
+            if normalized:
+                return normalized
+        
+        # Fall back to Host header
+        host = request.headers.get("Host")
+        if host:
+            normalized = BlocksContextManager.normalize_domain(host)
+            if normalized:
+                return normalized
+        
+        return None
+    
+    @staticmethod
+    def create_from_jwt_claims(claims: Dict[str, Any], application_domain: str = "") -> BlocksContext:
         """Create BlocksContext from JWT claims dictionary"""
         
         def get_claim_value(claim_name: str, default: Any = "") -> Any:
@@ -99,7 +161,8 @@ class BlocksContextManager:
             phone_number=get_claim_value(BlocksContext.PHONE_NUMBER_CLAIM),
             display_name=get_claim_value(BlocksContext.DISPLAY_NAME_CLAIM),
             oauth_token=get_claim_value(BlocksContext.TOKEN_CLAIM),
-            actual_tenant_id=get_claim_value(BlocksContext.TENANT_ID_CLAIM)
+            actual_tenant_id=get_claim_value(BlocksContext.TENANT_ID_CLAIM),
+            application_domain=application_domain
         )
     
     @staticmethod
@@ -117,7 +180,8 @@ class BlocksContextManager:
         phone_number: Optional[str] = None,
         display_name: Optional[str] = None,
         oauth_token: Optional[str] = None,
-        actual_tenant_id: Optional[str] = None
+        actual_tenant_id: Optional[str] = None,
+        application_domain: str = ""
     ) -> BlocksContext:
         """Create BlocksContext from individual parameters"""
         return BlocksContext(
@@ -134,7 +198,8 @@ class BlocksContextManager:
             phone_number=phone_number or "",
             display_name=display_name or "",
             oauth_token=oauth_token or "",
-            actual_tenant_id=actual_tenant_id or ""
+            actual_tenant_id=actual_tenant_id or "",
+            application_domain=application_domain
         )
     
     @staticmethod

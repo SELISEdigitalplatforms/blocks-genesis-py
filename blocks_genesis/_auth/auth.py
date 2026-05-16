@@ -1,14 +1,14 @@
 import json
-from typing import Any, Dict, List, Optional
-from fastapi import Depends, Request, HTTPException
-from pymongo.collection import Collection
-from datetime import datetime, timezone
+import logging
 import base64
-import aiohttp
 import asyncio
-import jwt
-from jwt import ExpiredSignatureError, InvalidTokenError, PyJWKClient
+from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime, timezone
 
+from fastapi import Request, HTTPException, Depends
+import aiohttp
+import jwt
+from jwt import PyJWKClient, ExpiredSignatureError, InvalidTokenError
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.hazmat.primitives import serialization
 
@@ -18,9 +18,98 @@ from blocks_genesis._cache.cache_provider import CacheProvider
 from blocks_genesis._database.db_context import DbContext
 from blocks_genesis._lmt.activity import Activity
 from blocks_genesis._tenant.tenant import Tenant
-from blocks_genesis._tenant.tenant_service import TenantService, get_tenant_service
+from blocks_genesis._tenant.tenant_service import TenantService
+
+_logger = logging.getLogger(__name__)
 
 
+
+# ============================================================================
+# TOKEN EXTRACTION (TokenHelper equivalent)
+# ============================================================================
+
+async def extract_token_from_request(request: Request, tenant_service: TenantService) -> Tuple[Optional[str], bool]:
+    """
+    Extract token from request following .NET TokenHelper pattern.
+    Returns: (token, is_third_party_token)
+    
+    Extraction priority:
+    1. Authorization: Bearer <token> header
+    2. Tenant-specific cookie (using application domain)
+    3. Third-party provider cookie (from tenant config)
+    
+    The is_third_party_token flag indicates whether the token came from
+    third-party JWT parameters configuration.
+    """
+    # 1. Check Authorization header (primary source)
+    auth_header = request.headers.get("Authorization") or ""
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()  # Remove "Bearer " prefix
+        if token:
+            return token, False
+    
+    # 2. Fall back to cookies
+    return await _extract_token_from_cookie(request, tenant_service)
+
+
+async def _extract_token_from_cookie(request: Request, tenant_service: TenantService) -> Tuple[Optional[str], bool]:
+    """
+    Extract token from cookies following .NET TokenHelper.GetTokenFromCookie pattern.
+    
+    1. Tries tenant-specific cookie using application domain
+    2. Falls back to third-party token cookie from tenant config
+    
+    Returns: (token, is_third_party_token)
+    """
+    # Validate BlocksContext exists with tenant_id
+    context = BlocksContextManager.get_context()
+    if not context or not context.tenant_id:
+        return None, False
+    
+    # Resolve application domain from request headers (Origin > Referer > Host)
+    application_domain = BlocksContextManager.resolve_application_domain(request)
+    
+    # 1. Try tenant-specific cookie using application domain as name
+    if application_domain:
+        token = request.cookies.get(application_domain)
+        if token:
+            return token, False  # Primary tenant token, not third-party
+
+    # Localhost/dev fallback: support loopback equivalents when cookie was set on a different local host alias.
+    if application_domain and BlocksContextManager.is_localhost_host(application_domain):
+        for local_host in ("localhost", "127.0.0.1", "::1"):
+            if local_host == application_domain:
+                continue
+            token = request.cookies.get(local_host)
+            if token:
+                return token, False
+
+    # Backward compatibility fallback: previous behavior could include host:port in cookie name.
+    raw_host = request.headers.get("Host", "")
+    if raw_host and raw_host != application_domain:
+        token = request.cookies.get(raw_host)
+        if token:
+            return token, False
+    
+    # 2. Fall back to third-party token cookie
+    tenant = await tenant_service.get_tenant(context.tenant_id)
+    if not tenant or not tenant.third_party_jwt_token_parameters:
+        return None, False
+    
+    cookie_key = tenant.third_party_jwt_token_parameters.cookie_key
+    if not cookie_key:
+        return None, False
+    
+    third_party_token = request.cookies.get(cookie_key)
+    if third_party_token:
+        return third_party_token, True  # Third-party token from provider
+    
+    return None, False
+
+
+# ============================================================================
+# CERTIFICATE HANDLING
+# ============================================================================
 
 async def fetch_cert_bytes(cert_url: str) -> bytes:
     if cert_url.startswith("http"):
@@ -36,50 +125,169 @@ async def fetch_cert_bytes(cert_url: str) -> bytes:
         except Exception as e:
             raise RuntimeError(f"Error reading cert file {cert_url}: {e}")
 
-async def get_tenant_cert(cache_client: CacheClient, tenant: Tenant, tenant_id: str) -> bytes:
-    key = f"tetocertpublic::{tenant_id}"
-    cert_bytes = cache_client.get_string_value(key)
-    if cert_bytes is None:
-        cert_bytes = await fetch_cert_bytes(tenant.jwt_token_parameters.public_certificate_path)
+
+# ============================================================================
+# MAIN AUTHENTICATION HANDLER
+# ============================================================================
+
+async def authenticate(
+    request: Request,
+    tenant_service: TenantService,
+    cache_client: Optional[CacheClient] = None
+) -> Dict[str, Any]:
+    """
+    Main authentication handler.
+    
+    Flow:
+    1. Extract token from Authorization header or cookies
+    2. Resolve tenant ID (from claims or context)
+    3. Load tenant configuration
+    4. Determine if token is third-party (based on tenant config)
+    5. Validate token (primary or fallback)
+    6. Create and store BlocksContext with metadata
+    7. Set activity properties
+    
+    Raises HTTPException on authentication failure.
+    """
+    if cache_client is None:
+        cache_client = CacheProvider.get_client()
+    
+    # 1. Extract token (returns token and whether it's from third-party provider)
+    token, is_third_party = await extract_token_from_request(request, tenant_service)
+    if not token:
+        raise HTTPException(status_code=401, detail="Token missing")
+    
+    # 2. Resolve tenant ID from context
+    context = BlocksContextManager.get_context()
+    tenant_id = context.tenant_id if context else None
+    
+    # 3. Load tenant configuration
+    tenant = await tenant_service.get_tenant(tenant_id) if tenant_id else None
+    if not tenant:
+        raise HTTPException(status_code=401, detail="Tenant not found")
+    
+    # Store tenant in request state for later use
+    request.state._blocks_tenant = tenant
+    
+    # 4. Validate token based on source
+    payload = None
+    
+    if is_third_party:
+        # Third-party token: use fallback validation (JWKS or public cert)
+        payload = await validate_with_fallback(token, tenant, request)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Token validation failed")
+    else:
+        # Tenant token: try primary validation first, then fallback
+        try:
+            payload = await validate_jwt_token(token, tenant, cache_client, request)
+        except HTTPException:
+            # If primary fails, try fallback validation
+            _logger.info("Primary validation failed, attempting fallback")
+            payload = await validate_with_fallback(token, tenant, request)
+            if not payload:
+                raise HTTPException(status_code=401, detail="Token validation failed")
+    
+    # 5. Create and store BlocksContext
+    application_domain = BlocksContextManager.resolve_application_domain(request)
+    blocks_context = BlocksContextManager.create_from_jwt_claims(
+        payload,
+        application_domain=application_domain or ""
+    )
+    BlocksContextManager.set_context(blocks_context)
+    
+    # 6. Set activity properties for tracing
+    Activity.set_current_property("baggage.UserId", blocks_context.user_id)
+    Activity.set_current_property("baggage.IsAuthenticated", "true")
+    Activity.set_current_property("baggage.IsThirdPartyToken", str(is_third_party))
+    
+    _logger.info(
+        f"User {blocks_context.user_id} authenticated for tenant {blocks_context.tenant_id} "
+        f"(third_party={is_third_party})"
+    )
+    
+    return payload
+
+def create_certificate(certificate_data: bytes, password: Optional[str] = None):
+    """Load certificate from PKCS12 data."""
+    try:
+        password_bytes = password.encode('utf-8') if password else None
+        cert = pkcs12.load_pkcs12(certificate_data, password_bytes)
+        return cert.additional_certs[0].certificate if cert.additional_certs else None
+    except Exception as e:
+        _logger.error(f"Failed to create certificate: {e}")
+        return None
+
+
+async def get_tenant_cert(cache_client: CacheClient, tenant: Tenant, tenant_id: str) -> Optional[bytes]:
+    """
+    Get tenant's public certificate from cache or fetch and cache it.
+    Caches based on certificate validity period.
+    """
+    if not tenant.jwt_token_parameters:
+        return None
+    
+    cache_key = f"tetocertpublic::{tenant_id}"
+    
+    # Try cache first
+    try:
+        cached = cache_client.get_string_value(cache_key)
+        if cached:
+            return base64.b64decode(cached)
+    except Exception:
+        pass
+    
+    # Fetch certificate
+    cert_bytes = await fetch_cert_bytes(tenant.jwt_token_parameters.public_certificate_path)
+    if not cert_bytes:
+        return None
+    
+    # Calculate TTL based on certificate validity
+    try:
         now = datetime.now(timezone.utc)
         issue_date = tenant.jwt_token_parameters.issue_date
-        if issue_date.tzinfo is None:
+        if issue_date and issue_date.tzinfo is None:
             issue_date = issue_date.replace(tzinfo=timezone.utc)
-        days_remaining = (
-            tenant.jwt_token_parameters.certificate_valid_for_number_of_days
-            - (now - issue_date).days
-            - 1
-        )
-        ttl = max(60, days_remaining  * 24 * 60 * 60)  # Ensure at least 60 seconds TTL
-        if ttl > 0:
-            cached_value = base64.b64encode(cert_bytes).decode("utf-8")
-            await cache_client.add_string_value(key, cached_value, ex=int(ttl))
+        
+        if issue_date:
+            days_remaining = (
+                tenant.jwt_token_parameters.certificate_valid_for_number_of_days
+                - (now - issue_date).days - 1
+            )
+            ttl = max(60, days_remaining * 86400)  # At least 60 seconds
+            
+            if ttl > 0:
+                cached_value = base64.b64encode(cert_bytes).decode("utf-8")
+                await cache_client.add_string_value_async(cache_key, cached_value, ttl)
+    except Exception as e:
+        _logger.warning(f"Failed to cache certificate: {e}")
+    
     return cert_bytes
 
 
-async def authenticate(request: Request, tenant_service: TenantService, cache_client: CacheClient):
+# ============================================================================
+# JWT VALIDATION (Primary)
+# ============================================================================
 
-    tenant_id = BlocksContextManager.get_context().tenant_id if BlocksContextManager.get_context() else None
-    tenant = await tenant_service.get_tenant(tenant_id)
-    is_third_party_token = False
-
-    header = request.headers.get("Authorization")
-    if header and any(header.startswith(prefix) for prefix in ["bearer ", "Bearer "]):
-        token = header.split(" ", 1)[1].strip()
-    else:
-        bc = BlocksContextManager.get_context()
-        token = request.cookies.get(f"access_token_{bc.tenant_id}", "")
-        if not token and (ck := getattr(tenant.third_party_jwt_token_parameters, "cookie_key", None)):
-            token = request.cookies.get(ck, "")
-            is_third_party_token = True
-        
-    if not token:
-        raise HTTPException(401, "Token missing")
+async def validate_jwt_token(
+    token: str,
+    tenant: Tenant,
+    cache_client: CacheClient,
+    request: Request
+) -> Dict[str, Any]:
+    """
+    Validate JWT token using tenant's public certificate.
+    Returns decoded payload if valid.
+    """
+    if not tenant.jwt_token_parameters:
+        raise HTTPException(401, "Invalid tenant configuration")
     
-    if is_third_party_token:
-     return await try_fallback_async(request=request, token=token, tenant = tenant , db_context=DbContext.get_provider())
-
-    cert_bytes = await get_tenant_cert(cache_client, tenant, tenant_id)    
+    # Get certificate
+    cert_bytes = await get_tenant_cert(cache_client, tenant, tenant.tenant_id)
+    if not cert_bytes:
+        raise HTTPException(500, "Failed to load certificate")
+    
+    # Create certificate and extract public key
     cert = create_certificate(cert_bytes, tenant.jwt_token_parameters.public_certificate_password)
     if not cert:
         raise HTTPException(500, "Failed to load certificate")
@@ -88,334 +296,154 @@ async def authenticate(request: Request, tenant_service: TenantService, cache_cl
     public_key_pem = public_key.public_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo
-    )
-    public_key_str = public_key_pem.decode('utf-8')
+    ).decode('utf-8')
     
+    # Decode and validate
     try:
         payload = jwt.decode(
-            jwt=token,
-            key=public_key_str,
+            token,
+            key=public_key_pem,
             algorithms=["RS256"],
             issuer=tenant.jwt_token_parameters.issuer,
             audience=tenant.jwt_token_parameters.audiences,
             options={
-                "verify_signature": True,  
-                "verify_exp": True,        
-                "verify_iss": True,        
-                "verify_aud": True, 
+                "verify_signature": True,
+                "verify_exp": True,
+                "verify_iss": True,
+                "verify_aud": True,
                 "verify_iat": True,
-                "verify_nbf": True,      
-                "require":["exp", "iat", "iss", "aud", "nbf"]
+                "verify_nbf": True,
+                "require": ["exp", "iat", "iss", "aud", "nbf"]
             },
-            leeway=0 
+            leeway=0
         )
-        extended_payload = dict(payload)
-        extended_payload[BlocksContext.REQUEST_URI_CLAIM] = str(request.url)
-        extended_payload[BlocksContext.TOKEN_CLAIM] = token
-
-        blocks_context = BlocksContextManager.create_from_jwt_claims(extended_payload)
-        BlocksContextManager.set_context(blocks_context)
-        Activity.set_current_property("baggage.UserId", blocks_context.user_id)
-        Activity.set_current_property("baggage.IsAuthenticate", "true")
         
-        return extended_payload
-    except ExpiredSignatureError as e:
-      print(f"JWT expired: {e}")
-      raise HTTPException(401, "Token expired")
+        # Enrich payload with request metadata
+        payload[BlocksContext.REQUEST_URI_CLAIM] = str(request.url)
+        payload[BlocksContext.TOKEN_CLAIM] = token
+        
+        return payload
     
+    except ExpiredSignatureError:
+        _logger.warning("Token expired")
+        raise HTTPException(401, "Token expired")
     except InvalidTokenError as e:
-     print(f"JWT verification failed: {e}, trying fallback...")
+        _logger.warning(f"Token validation failed: {e}")
+        raise
 
-     validation_result = await try_fallback_async(request=request, token=token,tenant=tenant, db_context=DbContext.get_provider())
 
-     if not validation_result:
-        raise HTTPException(401, f"Invalid token: {e}")
+# ============================================================================
+# FALLBACK VALIDATION (for third-party tokens)
+# ============================================================================
 
-     return validation_result
-
-    
-
-def create_certificate(certificate_data: bytes, password: str = None):
+async def _validate_via_jwks(token: str, jwks_url: str, issuer: str, audiences: List[str]) -> Optional[Dict[str, Any]]:
+    """Validate token using JWKS endpoint."""
     try:
-        password_bytes = password.encode('utf-8') if password else None
-        certificate = pkcs12.load_pkcs12(certificate_data, password_bytes)
-        return certificate.additional_certs[0].certificate
-    except Exception as e:
-        print(f"Failed to create certificate: {e}")
-        return None
-    
-
-async def try_fallback_async(
-    request,
-    token: str,
-    tenant: Tenant,
-    db_context: DbContext,
-    ex: Optional[Exception] = None
-) -> bool:
-  
-    if ex is not None:
-        print(f"[Fallback] Triggered due to: {type(ex).__name__} - {ex}")
-
-    try:
-        if not token or token.strip() == "":
-            print("[Fallback] ❌ No token found in request.")
-            return False
-
-        tp = getattr(tenant, "third_party_jwt_token_parameters", None)
-        if tp is None:
-            print("[Fallback] ❌ Tenant has no ThirdPartyJwtTokenParameters.")
-            return False
-
-        # Prefer JWKS if present
-        if tp.jwks_url:
-            payload = await _get_from_jwks_url(token, tp)
-        else:
-            payload = await _get_from_public_certificate(token, tp)
-
-        if payload is None:
-            print("[Fallback] ❌ Fallback validation failed.")
-            return False
-
-        validated = await _validate_token_with_fallback_async(payload, token, request, db_context)
-        return validated
-
-    except Exception as final_ex:
-        print(f"[Fallback] 💥 Unhandled error: {final_ex}")
-        return False
-
-
-# --------------------------
-# JWKS-based retrieval + validation
-# --------------------------
-async def _get_from_jwks_url(token: str, tp_params) -> Optional[Dict[str, Any]]:
-
-    jwks_url = tp_params.jwks_url
-    if not jwks_url:
-        return None
-
-    try:
-        # PyJWKClient is synchronous; run in threadpool to avoid blocking event loop
         loop = asyncio.get_running_loop()
-
-        def _get_signing_key():
+        
+        def _get_key():
             client = PyJWKClient(jwks_url)
             signing_key = client.get_signing_key_from_jwt(token)
             return signing_key.key
-
-        public_key = await loop.run_in_executor(None, _get_signing_key)
-
-        # decode
-        options = {"verify_signature": True, "verify_exp": True, "verify_nbf": True, "verify_iat": True}
+        
+        public_key = await loop.run_in_executor(None, _get_key)
+        
         payload = jwt.decode(
             token,
             key=public_key,
             algorithms=["RS256", "RS384", "RS512"],
-            issuer=tp_params.issuer or None,
-            audience=tp_params.audiences or None,
-            options=options,
+            issuer=issuer or None,
+            audience=audiences or None,
+            options={"verify_signature": True, "verify_exp": True, "verify_nbf": True},
             leeway=0
         )
-        print("[Fallback] ✅ Token validated via JWKS.")
+        _logger.info("Token validated via JWKS")
         return payload
-
     except Exception as e:
-        print(f"[Fallback] ❌ JWKS validation failed: {e}")
+        _logger.warning(f"JWKS validation failed: {e}")
         return None
 
 
-# --------------------------
-# Public certificate-based retrieval + validation
-# --------------------------
-async def _get_from_public_certificate(token: str, tp_params) -> Optional[Dict[str, Any]]:
-   
+async def _validate_via_public_cert(
+    token: str,
+    cert_path: str,
+    cert_password: Optional[str],
+    issuer: str,
+    audiences: List[str]
+) -> Optional[Dict[str, Any]]:
+    """Validate token using public certificate."""
     try:
-        cert_path = tp_params.public_certificate_path
-        if not cert_path:
-            print("[Fallback] ❌ No public certificate path configured.")
-            return None
-
         cert_bytes = await fetch_cert_bytes(cert_path)
-        if cert_bytes is None:
-            print("[Fallback] ❌ Failed to load public certificate bytes.")
+        if not cert_bytes:
             return None
-
-        cert = create_certificate(cert_bytes, tp_params.public_certificate_password or "")
-        if cert is None:
-            print("[Fallback] ❌ Failed to create certificate object.")
+        
+        cert = create_certificate(cert_bytes, cert_password)
+        if not cert:
             return None
-
+        
         public_key = cert.public_key().public_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo
         )
-
-        options = {"verify_signature": True, "verify_exp": True, "verify_nbf": True, "verify_iat": True}
+        
         payload = jwt.decode(
             token,
             key=public_key,
             algorithms=["RS256", "RS384", "RS512"],
-            issuer=tp_params.issuer or None,
-            audience=tp_params.audiences or None,
-            options=options,
+            issuer=issuer or None,
+            audience=audiences or None,
+            options={"verify_signature": True, "verify_exp": True, "verify_nbf": True},
             leeway=0
         )
-
-        print("[Fallback] ✅ Token validated via public certificate.")
+        _logger.info("Token validated via public certificate")
         return payload
-
     except Exception as e:
-        print(f"[Fallback] ❌ Public certificate validation failed: {e}")
+        _logger.warning(f"Public certificate validation failed: {e}")
         return None
 
 
-# --------------------------
-# Final validation step + store BlocksContext
-# --------------------------
-async def _validate_token_with_fallback_async(
-    payload: Dict[str, Any],
+async def validate_with_fallback(
     token: str,
-    request,
-    db_context: DbContext
-) -> bool:
+    tenant: Tenant,
+    request: Request
+) -> Optional[Dict[str, Any]]:
+    """
+    Try to validate third-party token using JWKS or public certificate.
+    Returns payload if valid, None otherwise.
+    """
+    if not tenant.third_party_jwt_token_parameters:
+        return None
     
-    try:
-        # Attach request uri and token to payload (like AddClaims in C#)
-        payload = dict(payload)  # make a copy
-        payload[BlocksContext.REQUEST_URI_CLAIM] = str(request.url)
-        payload[BlocksContext.TOKEN_CLAIM] = token
-
-        # Map and store third-party context fields (reads mapping from DB)
-        await _store_third_party_blocks_context_activity(payload, request, db_context)
-        # Activity baggage
-        Activity.set_current_property("baggage.UserId", BlocksContextManager.get_context().user_id or "")
-        Activity.set_current_property("baggage.IsAuthenticate", "true")
-
-        print("[Fallback] ✅ Fallback flow finished successfully.")
-        return True
-
-    except Exception as e:
-        print(f"[Fallback] ❌ Validation+context store failed: {e}")
-        return False
-
-
-# --------------------------
-# Claim mapping & BlocksContext creation (C# StoreThirdPartyBlocksContextActivity equivalent)
-# --------------------------
-async def _store_third_party_blocks_context_activity(
-    payload: Dict[str, Any],
-    request,
-    db_context: DbContext
-):
-    try:
-        # find mapping doc (the C# code takes the first doc)
-        coll = await  DbContext.get_provider().get_collection("ThirdPartyJWTClaims")
-        claims_mapper =  coll.find_one({}) or {}
-
-        # helper functions to parse nested claim object like "user.roles" or "roles"
-        def _extract_claim_property(claim_object: str) -> str:
-            parts = claim_object.split(".")
-            return parts[-1] if parts else claim_object
-
-        def _get_claim_object_name(claim_object: str) -> str:
-            parts = claim_object.split(".")
-            return parts[0] if parts else claim_object
-
-        def _extract_claim_value_from_payload(payload_obj: Dict[str, Any], claim_object: str) -> str:
-            # If claim_object is nested like "profile.name" - traverse
-            parts = claim_object.split(".")
-            cur = payload_obj
-            try:
-                for p in parts:
-                    if isinstance(cur, dict):
-                        cur = cur.get(p)
-                    else:
-                        return ""
-                # if the final is not a primitive, return its JSON string representation
-                if isinstance(cur, (dict, list)):
-                    return json.dumps(cur)
-                return str(cur) if cur is not None else ""
-            except Exception:
-                return ""
-
-        #roles resolution
-        roles: List[str] = []
-        role_claims_key = claims_mapper.get("Roles", "")
-
-        if role_claims_key:
-            obj_name = _get_claim_object_name(role_claims_key)
-            claim_value = payload.get(obj_name)
-            roles = claim_value[_extract_claim_property(role_claims_key)]
-
-        # fallback: if still empty, look for standard role claim type
-        if not roles:
-            # common role claim keys
-            for k in (role_claims_key, "http://schemas.microsoft.com/ws/2008/06/identity/claims/role"):
-                roleClaims = payload.get(k)
-                if(not roleClaims):
-                    roles = roleClaims
-                    break
-
-        # user identifier
-        sub_claim = payload.get("sub", "") or payload.get("nameid", "") or payload.get("user_id", "")
-        email_claim = payload.get("email", "")
-
-        # Build userId according to mapping (C# logic)
-        user_id_mapper = claims_mapper.get("UserId", "")
-        if user_id_mapper:
-            # if mapping says "sub" then keep sub, otherwise extract nested value and append "_external"
-            if _extract_claim_property(user_id_mapper) == "sub":
-                user_id = sub_claim
-            else:
-                extracted = _extract_claim_value_from_payload(payload, user_id_mapper)
-                user_id = (extracted + "_external") if extracted else (sub_claim + "_external" if sub_claim else "")
-        else:
-            user_id = sub_claim or ""
-
-        # username and display name mapping
-        def _map_field(mapper_key: str, fallback_field: str = "") -> str:
-            mapper_val = claims_mapper.get(mapper_key, "")
-            if mapper_val.lower() == "email":
-                return email_claim or ""
-            if mapper_val:
-                return _extract_claim_value_from_payload(payload, mapper_val)
-            return fallback_field or ""
-
-        user_name = _map_field("UserName", "")
-        display_name = _map_field("Name", "")
-
-        # email mapping: if not set, try mapper
-        email = email_claim or _extract_claim_value_from_payload(payload, claims_mapper.get("Email", "") or "")
-
-        api_key = request.headers.get("x-blocks-key", "")  # C# used header BlocksConstants.BlocksKey
-
-        # Create BlocksContext (you might have a factory method; adapt as needed)
-        blocks_ctx = BlocksContextManager.create(
-            tenant_id=api_key,
-            roles= roles,
-            user_id=user_id,
-            is_authenticated=True,
-            request_uri=str(request.url),
-            organization_id="",
-            email=email or "",
-            permissions=[],
-            user_name=user_name or "",
-            phone_number="",
-            display_name=display_name or "",
-            oauth_token=payload.get("oauth", None),
-            actual_tenant_id=api_key
+    params = tenant.third_party_jwt_token_parameters
+    
+    # Try JWKS first if available
+    if params.jwks_url:
+        payload = await _validate_via_jwks(
+            token,
+            params.jwks_url,
+            params.issuer,
+            params.audiences
         )
-
-        BlocksContextManager.set_context(blocks_ctx)
-
-        # Store serialized context on request.state so downstream handlers can access it.
-        request.state.third_party_context_json = json.dumps(blocks_ctx.dict() if hasattr(blocks_ctx, "dict") else {})
-
-        # also optionally set a header-like bag in request.state for downstream response middleware to copy into a header
-        request.state.third_party_context_header = request.state.third_party_context_json
-
-        print("[Fallback] ✅ Third-party context stored from claims mapper.")
-    except Exception as e:
-        print(f"[Fallback] ❌ Error storing third-party blocks context: {e}")
+        if payload:
+            payload[BlocksContext.REQUEST_URI_CLAIM] = str(request.url)
+            payload[BlocksContext.TOKEN_CLAIM] = token
+            return payload
+    
+    # Fall back to public certificate
+    if params.public_certificate_path:
+        payload = await _validate_via_public_cert(
+            token,
+            params.public_certificate_path,
+            params.public_certificate_password,
+            params.issuer,
+            params.audiences
+        )
+        if payload:
+            payload[BlocksContext.REQUEST_URI_CLAIM] = str(request.url)
+            payload[BlocksContext.TOKEN_CLAIM] = token
+            return payload
+    
+    return None
 
 
 
@@ -482,83 +510,170 @@ async def handle_root_tenant_access(
 
 async def check_standard_access(
     context: BlocksContext,
-    controller: str,
-    action: str,
+    resource_name: str,
     db_context: DbContext
 ) -> bool:
-
+    """
+    Check if user has access to protected resource.
+    
+    Validates:
+    1. Resource name is provided (mandatory)
+    2. User is within quota limits
+    3. User has required roles or permissions
+    
+    Returns True if access is allowed, False otherwise.
+    """
+    if not resource_name:
+        _logger.warning("Resource name is required for protected endpoint access")
+        return False
+    
+    if not context or not context.tenant_id:
+        _logger.warning("Tenant context required for access check")
+        return False
+    
+    # Check rate limit quota
+    if not await _check_quota(context, resource_name, db_context):
+        _logger.warning(f"Rate limit exceeded for resource {resource_name}")
+        return False
+    
+    # Check permissions
     roles = context.roles or []
     permissions = context.permissions or []
-
-    resource = f"{context.service_name}::{controller}::{action}".lower()
-
-    collection = await db_context.get_collection("Permissions", tenant_id=context.tenant_id)
-
-    query = {
-        "Type": 1,
-        "Resource": resource,
-        "$or": [
-            {"Roles": {"$in": roles}},
-            {"Name": {"$in": permissions}}
-        ]
-    }
-
-    count = await collection.count_documents(query)
-    return count > 0
+    
+    has_access = await _check_permission(resource_name, roles, permissions, context.tenant_id, db_context)
+    return has_access
 
 
-def authorize(bypass_authorization: bool = False):
+async def _check_quota(
+    context: BlocksContext,
+    resource_name: str,
+    db_context: DbContext
+) -> bool:
+    """
+    Check if user is within rate limit quota for resource.
+    
+    Returns False if limit exceeded (429), True otherwise.
+    """
+    try:
+        collection = await db_context.get_collection("ResourceLimits", tenant_id=context.tenant_id)
+        
+        resource_limit = await collection.find_one({"Resource": resource_name})
+        if not resource_limit:
+            return True  # No limit configured, allow access
+        
+        limit = resource_limit.get("Limit", 0)
+        usage = resource_limit.get("Usage", 0)
+        
+        remaining = limit - usage
+        if remaining <= 0:
+            _logger.warning(f"Quota exceeded for {resource_name}: limit={limit}, usage={usage}")
+            return False
+        
+        return True
+    except Exception as e:
+        _logger.error(f"Error checking quota for {resource_name}: {e}")
+        return True  # Allow on error
+
+
+async def _check_permission(
+    resource_name: str,
+    roles: List[str],
+    permissions: List[str],
+    tenant_id: str,
+    db_context: DbContext
+) -> bool:
+    """
+    Check if user has permission to access resource.
+    
+    Checks both role-based and permission-based access.
+    Returns True if user has any matching role or permission.
+    """
+    try:
+        collection = await db_context.get_collection("Permissions", tenant_id=tenant_id)
+        
+        # Build $or conditions for role-based and permission-based access
+        or_conditions = []
+        
+        if roles:
+            or_conditions.append({"Roles": {"$in": roles}})
+        
+        if permissions:
+            or_conditions.append({"Permissions": {"$in": permissions}})
+        
+        # If no roles and no permissions, deny access
+        if not or_conditions:
+            _logger.warning(
+                f"Access denied for resource {resource_name}: "
+                f"user has no roles or permissions"
+            )
+            return False
+        
+        # Look for permission matching resource name and user's roles/permissions
+        query = {
+            "Type": 1,
+            "Resource": resource_name,
+            "$or": or_conditions
+        }
+        
+        count = await collection.count_documents(query)
+        has_access = count > 0
+        
+        if not has_access:
+            _logger.warning(
+                f"Access denied for resource {resource_name}: "
+                f"roles={roles}, permissions={permissions}"
+            )
+        
+        return has_access
+    except Exception as e:
+        _logger.error(f"Error checking permissions for {resource_name}: {e}")
+        return False
+
+
+def authorize(resource_name: str, bypass_authorization: bool = False):
+    """
+    FastAPI dependency for authorization with mandatory resource protection.
+    
+    Args:
+        resource_name: The protected resource name (required). Must be provided for authorization check.
+        bypass_authorization: If True, skips authorization checks while still authenticating.
+    
+    Returns:
+        FastAPI Depends that authenticates and authorizes the request.
+    
+    Raises:
+        ValueError: If resource_name is not provided or is empty.
+    """
+    if not resource_name or not resource_name.strip():
+        raise ValueError("resource_name is required for protected endpoint authorization")
+    
     async def dependency(request: Request):
         tenant_service = TenantService()
         cache_client = CacheProvider.get_client()
         db_context = DbContext.get_provider()
 
-        # 1. Authenticate (your JWT logic)
+        # 1. Authenticate
         await authenticate(request, tenant_service, cache_client)
 
         context = BlocksContextManager.get_context()
         if not context:
-            raise HTTPException(401, "Missing context")
+            raise HTTPException(status_code=401, detail="Missing context")
 
-        # 2. Bypass if requested
+        # 2. Bypass authorization if requested
         if bypass_authorization:
-            return
+            return context
 
-        # 3. Extract controller & action (same as C# ControllerActionDescriptor)
-        path_parts = request.url.path.strip("/").split("/")
-        if len(path_parts) >= 4:
-            controller = path_parts[2]
-            action = path_parts[3]
-        elif len(path_parts) >= 2:
-            controller = path_parts[0]
-            action = path_parts[1]
-        else:
-            raise HTTPException(400, "Invalid URL format.")
-
-        # ---------------------------------------------------------
-        #         ROOT TENANT SPECIAL ACCESS (C# equivalent)
-        # ---------------------------------------------------------
-        is_root_allowed = await handle_root_tenant_access(
-            request=request,
+        # 3. Check resource access with mandatory resource_name
+        # (matches .NET ProtectedEndpointAccessHandler logic)
+        has_access = await check_standard_access(
             context=context,
-            tenants=tenant_service,
+            resource_name=resource_name,
             db_context=db_context
         )
-
-        if is_root_allowed:
-            return  # Allowed immediately like context.Succeed()
-
-        # ---------------------------------------------------------
-        #              STANDARD PERMISSION CHECK
-        # ---------------------------------------------------------
-        allowed = await check_standard_access(
-            context=context,
-            controller=controller,
-            action=action,
-            db_context=db_context
-        )
-
-        if not allowed:
-            raise HTTPException(403, "Insufficient permissions")
+        
+        if not has_access:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        return context
 
     return Depends(dependency)

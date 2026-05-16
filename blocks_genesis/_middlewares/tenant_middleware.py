@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from datetime import datetime
 from typing import AsyncIterator, Callable
+from urllib.parse import urlparse
 from opentelemetry.trace import StatusCode
 from blocks_genesis._auth.blocks_context import BlocksContextManager
 from blocks_genesis._lmt.activity import Activity
@@ -56,7 +57,11 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
             tenant_service = get_tenant_service()
 
             if not api_key:
-                tenant = await tenant_service.get_tenant_by_domain(request.base_url.hostname)
+                request_host = request.base_url.hostname or ""
+                if BlocksContextManager.is_localhost_host(request_host):
+                    return self._reject(400, "BadRequest: Missing_Tenant_Key_Or_Id")
+
+                tenant = await tenant_service.get_tenant_by_domain(request_host)
                 if not tenant:
                     return self._reject(404, "Not_Found: Application_Not_Found")
             else:
@@ -74,6 +79,7 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
                 "true" if tenant.is_root_tenant else "false"
             )
 
+            application_domain = BlocksContextManager.resolve_application_domain(request)
             ctx = BlocksContextManager.create(
                 tenant_id=tenant.tenant_id,
                 roles=[],
@@ -88,7 +94,8 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
                 phone_number="",
                 display_name="",
                 oauth_token="",
-                actual_tenant_id=tenant.tenant_id
+                actual_tenant_id=tenant.tenant_id,
+                application_domain=application_domain or ""
             )
             BlocksContextManager.set_context(ctx)
             Activity.set_current_property("SecurityContext", str(ctx.__dict__))
@@ -149,20 +156,31 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
     def _is_valid_origin_or_referer(self, request: Request, tenant: Tenant) -> bool:
         def extract_domain(url: str) -> str:
             try:
-                return url.split("//")[-1].split("/")[0].split(":")[0]
+                if not url:
+                    return ""
+                candidate = url if "://" in url else f"//{url}"
+                parsed = urlparse(candidate)
+                if parsed.hostname:
+                    return parsed.hostname.lower()
             except Exception:
-                return ""
+                pass
+            return BlocksContextManager.normalize_domain(url)
 
-        allowed = [extract_domain(d) for d in tenant.allowed_domains]
+        allowed = [extract_domain(d) for d in (tenant.allowed_domains or []) if d]
+        
+        # Also add application domains from Applications array
+        if tenant.applications:
+            for app in tenant.applications:
+                if app.domain:
+                    allowed.append(extract_domain(app.domain))
+        
         current = (
             extract_domain(request.headers.get("origin") or "")
             or extract_domain(request.headers.get("referer") or "")
         )
-        normalized_app_domain = extract_domain(tenant.application_domain)
 
         return (
             not current
-            or current == "localhost"
-            or current == normalized_app_domain
+            or BlocksContextManager.is_localhost_host(current)
             or current in allowed
         )
