@@ -1,3 +1,4 @@
+
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -9,6 +10,33 @@ from blocks_genesis._auth.blocks_context import BlocksContextManager
 from blocks_genesis._lmt.activity import Activity
 from blocks_genesis._tenant.tenant import Tenant
 from blocks_genesis._tenant.tenant_service import get_tenant_service
+import json
+SENSITIVE_KEYS = {
+    "authorization",
+    "cookie",
+    "set-cookie",
+    "secret",
+    "x-blocks-service-key",
+    "x-api-key",
+    "token",
+    "access_token",
+    "refresh_token",
+    "password",
+}
+
+def is_sensitive_key(key: str) -> bool:
+    if not key:
+        return False
+    key_lower = key.lower()
+    return (
+        key_lower in SENSITIVE_KEYS
+        or "token" in key_lower
+        or "secret" in key_lower
+        or "password" in key_lower
+    )
+
+def sanitize_dict(d: dict) -> dict:
+    return {k: ("[REDACTED]" if is_sensitive_key(k) else v) for k, v in d.items()}
 
 
 async def tee_body_iterator(
@@ -46,13 +74,17 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
         if not any(path == p or path.startswith(p.rstrip("/ ") + "/") for p in self.included_paths):
             return await call_next(request)
 
+
         try:
+            # Sanitize headers and query params for logging
+            sanitized_headers = sanitize_dict(dict(request.headers))
+            sanitized_query = sanitize_dict(dict(request.query_params))
             Activity.set_current_properties({
-                "http.query": str(dict(request.query_params)),
-                "http.headers": str(dict(request.headers))
+                "http.query": json.dumps(sanitized_query),
+                "http.headers": json.dumps(sanitized_headers)
             })
 
-            api_key = request.headers.get("x-blocks-key") or request.query_params.get("x-blocks-key")
+            api_key = request.headers.get("x-blocks-key") or request.query_params.get("x-blocks-key") or request.query_params.get("tenant_id")
             tenant: Tenant | None = None
             tenant_service = get_tenant_service()
 
@@ -95,7 +127,9 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
                 display_name="",
                 oauth_token="",
                 actual_tenant_id=tenant.tenant_id,
-                application_domain=application_domain or ""
+                application_domain=application_domain or "",
+                impersonated=False,
+                actor_user=None
             )
             BlocksContextManager.set_context(ctx)
             Activity.set_current_property("SecurityContext", str(ctx.__dict__))
@@ -130,9 +164,11 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
                     f"HTTP {response.status_code}"
                 )
 
+
+            sanitized_response_headers = sanitize_dict(dict(response.headers))
             Activity.set_current_properties({
                 "response.status.code": response.status_code,
-                "response.headers": str(dict(response.headers)),
+                "response.headers": json.dumps(sanitized_response_headers),
             })
 
             return response

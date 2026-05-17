@@ -25,12 +25,12 @@ _logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# TOKEN EXTRACTION (TokenHelper equivalent)
+# TOKEN EXTRACTION
 # ============================================================================
 
 async def extract_token_from_request(request: Request, tenant_service: TenantService) -> Tuple[Optional[str], bool]:
     """
-    Extract token from request following .NET TokenHelper pattern.
+    Extract token from request.
     Returns: (token, is_third_party_token)
     
     Extraction priority:
@@ -52,28 +52,22 @@ async def extract_token_from_request(request: Request, tenant_service: TenantSer
     return await _extract_token_from_cookie(request, tenant_service)
 
 
-async def _extract_token_from_cookie(request: Request, tenant_service: TenantService) -> Tuple[Optional[str], bool]:
+async def _extract_token_from_cookie(request: Request, tenant_service: TenantService) -> Tuple[Optional[str], bool, Optional[str]]:
     """
-    Extract token from cookies following .NET TokenHelper.GetTokenFromCookie pattern.
+    Extract token from cookies.
     
     1. Tries tenant-specific cookie using application domain
     2. Falls back to third-party token cookie from tenant config
     
-    Returns: (token, is_third_party_token)
+    Returns: (token, is_third_party_token, application_domain)
     """
     # Validate BlocksContext exists with tenant_id
     context = BlocksContextManager.get_context()
     if not context or not context.tenant_id:
-        return None, False
+        return None, False, None
     
     # Resolve application domain from request headers (Origin > Referer > Host)
     application_domain = BlocksContextManager.resolve_application_domain(request)
-    
-    # 1. Try tenant-specific cookie using application domain as name
-    if application_domain:
-        token = request.cookies.get(application_domain)
-        if token:
-            return token, False  # Primary tenant token, not third-party
 
     # Localhost/dev fallback: support loopback equivalents when cookie was set on a different local host alias.
     if application_domain and BlocksContextManager.is_localhost_host(application_domain):
@@ -82,29 +76,28 @@ async def _extract_token_from_cookie(request: Request, tenant_service: TenantSer
                 continue
             token = request.cookies.get(local_host)
             if token:
-                return token, False
-
-    # Backward compatibility fallback: previous behavior could include host:port in cookie name.
-    raw_host = request.headers.get("Host", "")
-    if raw_host and raw_host != application_domain:
-        token = request.cookies.get(raw_host)
+                return token, False, application_domain  # Primary tenant token, not third-party
+            
+    # 1. Try tenant-specific cookie using application domain as name
+    if application_domain:
+        token = request.cookies.get(application_domain)
         if token:
-            return token, False
+            return token, False, application_domain  # Primary tenant token, not third-party
     
     # 2. Fall back to third-party token cookie
     tenant = await tenant_service.get_tenant(context.tenant_id)
     if not tenant or not tenant.third_party_jwt_token_parameters:
-        return None, False
+        return None, False, None
     
     cookie_key = tenant.third_party_jwt_token_parameters.cookie_key
     if not cookie_key:
-        return None, False
+        return None, False, None
     
     third_party_token = request.cookies.get(cookie_key)
     if third_party_token:
-        return third_party_token, True  # Third-party token from provider
+        return third_party_token, True, application_domain  # Third-party token from provider
     
-    return None, False
+    return None, False, None
 
 
 # ============================================================================
@@ -153,13 +146,16 @@ async def authenticate(
         cache_client = CacheProvider.get_client()
     
     # 1. Extract token (returns token and whether it's from third-party provider)
-    token, is_third_party = await extract_token_from_request(request, tenant_service)
+    token, is_third_party, application_domain = await extract_token_from_request(request, tenant_service)
     if not token:
         raise HTTPException(status_code=401, detail="Token missing")
     
     # 2. Resolve tenant ID from context
     context = BlocksContextManager.get_context()
     tenant_id = context.tenant_id if context else None
+
+    if not tenant_id:
+        tenant_id = request.headers.get("x-blocks-key") or request.query_params.get("x-blocks-key") or request.query_params.get("tenant_id")
     
     # 3. Load tenant configuration
     tenant = await tenant_service.get_tenant(tenant_id) if tenant_id else None
@@ -189,9 +185,9 @@ async def authenticate(
                 raise HTTPException(status_code=401, detail="Token validation failed")
     
     # 5. Create and store BlocksContext
-    application_domain = BlocksContextManager.resolve_application_domain(request)
     blocks_context = BlocksContextManager.create_from_jwt_claims(
         payload,
+        tenant_id,
         application_domain=application_domain or ""
     )
     BlocksContextManager.set_context(blocks_context)
@@ -446,68 +442,6 @@ async def validate_with_fallback(
     return None
 
 
-
-async def extract_project_key(request: Request) -> str | None:
-    # 1. Query param
-    if "ProjectKey" in request.query_params:
-        v = request.query_params.get("ProjectKey")
-        if v:
-            return v
-
-    # 2. JSON body (must allow buffering)
-    try:
-        body_bytes = await request.body()
-        if body_bytes:
-            body_json = json.loads(body_bytes.decode("utf-8"))
-            project_key = body_json.get("projectKey")
-            if project_key:
-                return project_key
-    except Exception:
-        pass
-
-    return None
-
-
-async def is_project_owner_or_shared(user_id: str, project_key: str, db_context: DbContext, tenants: TenantService):
-    # Check if this tenant is created by the user (owner check)
-    tenant = await tenants.get_tenant(project_key)
-    if tenant and tenant.created_by == user_id:
-        return True
-
-    # Check shared project (ProjectPeoples collection)
-    collection = await db_context.get_collection("ProjectPeoples", tenant_id=project_key)
-    query = {"UserId": user_id, "TenantId": project_key}
-    shared = await collection.find_one(query)
-    return shared is not None
-
-
-async def handle_root_tenant_access(
-    request: Request,
-    context: BlocksContext,
-    tenants: TenantService,
-    db_context: DbContext
-) -> bool:
-
-    blocks_key = request.headers.get("blocks-key")
-    if not blocks_key:
-        return False
-
-    tenant = await tenants.get_tenant(blocks_key)
-    if tenant is None or not tenant.is_root_tenant:
-        return False
-
-    project_key = await extract_project_key(request)
-    if not project_key:
-        return False
-
-    user_id = context.user_id
-    if not user_id:
-        return False
-
-    allowed = await is_project_owner_or_shared(user_id, project_key, db_context, tenants)
-    return allowed
-
-
 async def check_standard_access(
     context: BlocksContext,
     resource_name: str,
@@ -540,7 +474,7 @@ async def check_standard_access(
     roles = context.roles or []
     permissions = context.permissions or []
     
-    has_access = await _check_permission(resource_name, roles, permissions, context.tenant_id, db_context)
+    has_access = await _check_permission(resource_name, roles, permissions, context.actual_tenant_id if context.impersonated else context.tenant_id, db_context)
     return has_access
 
 
@@ -555,6 +489,7 @@ async def _check_quota(
     Returns False if limit exceeded (429), True otherwise.
     """
     try:
+        return True  # Quota check is currently disabled, always allow access. Implement actual logic as needed.
         collection = await db_context.get_collection("ResourceLimits", tenant_id=context.tenant_id)
         
         resource_limit = await collection.find_one({"Resource": resource_name})
@@ -589,41 +524,57 @@ async def _check_permission(
     Returns True if user has any matching role or permission.
     """
     try:
-        collection = await db_context.get_collection("Permissions", tenant_id=tenant_id)
-        
-        # Build $or conditions for role-based and permission-based access
-        or_conditions = []
-        
-        if roles:
-            or_conditions.append({"Roles": {"$in": roles}})
-        
-        if permissions:
-            or_conditions.append({"Permissions": {"$in": permissions}})
-        
+        # Determine tenant_id from context, handling impersonation
+        bc = BlocksContextManager.get_context()
+        effective_tenant_id = None
+        if bc is not None:
+            effective_tenant_id = bc.actual_tenant_id if getattr(bc, 'impersonated', False) and getattr(bc, 'actual_tenant_id', None) else bc.tenant_id
+        if not effective_tenant_id:
+            effective_tenant_id = tenant_id
+        if not effective_tenant_id:
+            return False
+
+        collection = await db_context.get_collection("Permissions", tenant_id=effective_tenant_id)
+        organization_id = getattr(bc, 'organization_id', None) if bc else None
+        if not organization_id or not str(organization_id).strip():
+            organization_id = "default"
+
         # If no roles and no permissions, deny access
-        if not or_conditions:
+        if not roles and not permissions:
             _logger.warning(
                 f"Access denied for resource {resource_name}: "
                 f"user has no roles or permissions"
             )
             return False
-        
-        # Look for permission matching resource name and user's roles/permissions
+
+        # AND: OrganizationId == organization_id
+        # OR:
+        #   - Resource in permissions
+        #   - (Resource == resource_name AND Roles in roles)
+        or_conditions = []
+        if permissions:
+            or_conditions.append({"Resource": {"$in": permissions}})
+        if roles:
+            or_conditions.append({
+                "$and": [
+                    {"Resource": resource_name},
+                    {"Roles": {"$in": roles}}
+                ]
+            })
         query = {
-            "Type": 1,
-            "Resource": resource_name,
+            "OrganizationId": organization_id,
             "$or": or_conditions
         }
-        
+
         count = await collection.count_documents(query)
         has_access = count > 0
-        
+
         if not has_access:
             _logger.warning(
                 f"Access denied for resource {resource_name}: "
                 f"roles={roles}, permissions={permissions}"
             )
-        
+
         return has_access
     except Exception as e:
         _logger.error(f"Error checking permissions for {resource_name}: {e}")
