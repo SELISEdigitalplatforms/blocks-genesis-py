@@ -97,17 +97,26 @@ class TenantService:
         return tenant
 
     async def get_tenant_by_domain(self, domain: str) -> Optional[Tenant]:
-        """Get tenant by application domain."""
-        if not domain:
+        """Get tenant by application domain (matches .NET logic)."""
+        if not domain or not domain.strip():
             return None
 
-        # Normalize domain to include https:// if not present
-        normalized_domain = domain if domain.startswith("https://") else f"https://{domain}"
+        # Normalize domain (strip, lowercase, remove protocol if present)
+        def normalize_domain(d):
+            d = d.strip().lower()
+            if d.startswith("http://"):
+                d = d[7:]
+            elif d.startswith("https://"):
+                d = d[8:]
+            return d
+
+        normalized = normalize_domain(domain)
+        domains = [f"http://{normalized}", f"https://{normalized}"]
 
         # Check in-memory cache first
         for tenant in self._tenant_cache.values():
             if tenant.applications and any(
-                app.domain and app.domain.lower() == normalized_domain.lower()
+                app.domain and normalize_domain(app.domain) == normalized
                 for app in tenant.applications
             ):
                 return tenant
@@ -116,7 +125,7 @@ class TenantService:
         try:
             tenant_dict = await self.database[self._collection_name].find_one({
                 "Applications": {
-                    "$elemMatch": {"Domain": normalized_domain}
+                    "$elemMatch": {"Domain": {"$in": domains}}
                 }
             })
             if tenant_dict:
