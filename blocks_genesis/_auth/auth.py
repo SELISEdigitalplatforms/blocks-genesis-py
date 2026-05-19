@@ -474,7 +474,7 @@ async def check_standard_access(
     roles = context.roles or []
     permissions = context.permissions or []
     
-    has_access = await _check_permission(resource_name, roles, permissions, context.actual_tenant_id if context.impersonated else context.tenant_id, db_context)
+    has_access = await _check_permission(resource_name, roles, permissions, context.original_tenant_id if context.impersonated else context.tenant_id, db_context)
     return has_access
 
 
@@ -528,7 +528,7 @@ async def _check_permission(
         bc = BlocksContextManager.get_context()
         effective_tenant_id = None
         if bc is not None:
-            effective_tenant_id = bc.actual_tenant_id if getattr(bc, 'impersonated', False) and getattr(bc, 'actual_tenant_id', None) else bc.tenant_id
+            effective_tenant_id = bc.original_tenant_id if getattr(bc, 'impersonated', False) and getattr(bc, 'original_tenant_id', None) else bc.tenant_id
         if not effective_tenant_id:
             effective_tenant_id = tenant_id
         if not effective_tenant_id:

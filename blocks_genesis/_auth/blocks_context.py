@@ -28,8 +28,7 @@ class BlocksContext(BaseModel):
     DISPLAY_NAME_CLAIM: ClassVar[str] = "name"
     PHONE_NUMBER_CLAIM: ClassVar[str] = "phone"
     IMPERSONATED_CLAIM: ClassVar[str] = "impersonated"
-    ACTUAL_TENANT_ID_CLAIM: ClassVar[str] = "actual_tenant_id"
-    ACTOR_USER_CLAIM: ClassVar[str] = "actor_user"
+    ORIGINAL_TENANT_ID_CLAIM: ClassVar[str] = "original_tenant_id"
     
     # Properties
     tenant_id: str = ""
@@ -45,10 +44,9 @@ class BlocksContext(BaseModel):
     user_name: str = ""
     phone_number: str = ""
     display_name: str = ""
-    actual_tenant_id: str = ""
+    original_tenant_id: str = ""
     application_domain: str = ""  # Domain extracted from Origin/Referer headers
     impersonated: bool = False
-    actor_user: Optional[str] = None  # For impersonation scenarios
 
     
     class Config:
@@ -124,7 +122,7 @@ class BlocksContextManager:
         return None
     
     @staticmethod
-    def create_from_jwt_claims(claims: Dict[str, Any], actual_tenant_id: str = "", application_domain: str = "") -> BlocksContext:
+    def create_from_jwt_claims(claims: Dict[str, Any], original_tenant_id: str = "", application_domain: str = "") -> BlocksContext:
         """Create BlocksContext from JWT claims dictionary"""
         
         def get_claim_value(claim_name: str, default: Any = "") -> Any:
@@ -146,11 +144,11 @@ class BlocksContextManager:
             except (ValueError, TypeError):
                 expire_on = None
 
-        if not actual_tenant_id:
-            actual_tenant_id: str = get_claim_value(BlocksContext.ACTUAL_TENANT_ID_CLAIM)
+        if not original_tenant_id:
+            original_tenant_id: str = get_claim_value(BlocksContext.ORIGINAL_TENANT_ID_CLAIM)
 
-        if not actual_tenant_id:
-            actual_tenant_id = get_claim_value(BlocksContext.TENANT_ID_CLAIM)
+        if not original_tenant_id:
+            original_tenant_id = get_claim_value(BlocksContext.TENANT_ID_CLAIM)
         
         return BlocksContext(
             tenant_id=get_claim_value(BlocksContext.TENANT_ID_CLAIM),
@@ -166,10 +164,9 @@ class BlocksContextManager:
             phone_number=get_claim_value(BlocksContext.PHONE_NUMBER_CLAIM),
             display_name=get_claim_value(BlocksContext.DISPLAY_NAME_CLAIM),
             oauth_token=get_claim_value(BlocksContext.TOKEN_CLAIM),
-            actual_tenant_id=actual_tenant_id,
+            original_tenant_id=original_tenant_id,
             application_domain=application_domain,
-            impersonated=get_claim_value(BlocksContext.IMPERSONATED_CLAIM, False),
-            actor_user=get_claim_value(BlocksContext.ACTOR_USER_CLAIM, None)
+            impersonated=get_claim_value(BlocksContext.IMPERSONATED_CLAIM, False)
         )
     
     @staticmethod
@@ -187,10 +184,9 @@ class BlocksContextManager:
         phone_number: Optional[str] = None,
         display_name: Optional[str] = None,
         oauth_token: Optional[str] = None,
-        actual_tenant_id: Optional[str] = None,
+        original_tenant_id: Optional[str] = None,
         application_domain: str = "",
-        impersonated: bool = False,
-        actor_user: Optional[str] = None
+        impersonated: bool = False
     ) -> BlocksContext:
         """Create BlocksContext from individual parameters"""
         return BlocksContext(
@@ -207,10 +203,9 @@ class BlocksContextManager:
             phone_number=phone_number or "",
             display_name=display_name or "",
             oauth_token=oauth_token or "",
-            actual_tenant_id=actual_tenant_id or "",
+            original_tenant_id=original_tenant_id or "",
             application_domain=application_domain,
-            impersonated=impersonated,
-            actor_user=actor_user
+            impersonated=impersonated
         )
     
     @staticmethod

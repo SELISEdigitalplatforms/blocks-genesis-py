@@ -126,10 +126,9 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
                 phone_number="",
                 display_name="",
                 oauth_token="",
-                actual_tenant_id=tenant.tenant_id,
+                original_tenant_id=tenant.tenant_id,
                 application_domain=application_domain or "",
-                impersonated=False,
-                actor_user=None
+                impersonated=False
             )
             BlocksContextManager.set_context(ctx)
             Activity.set_current_property("SecurityContext", str(ctx.__dict__))
