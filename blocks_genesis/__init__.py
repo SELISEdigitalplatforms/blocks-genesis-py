@@ -16,7 +16,6 @@ from blocks_genesis._message.message_client import MessageClient
 from blocks_genesis._utilities.crypto_service import CryptoService
 from blocks_genesis._auth.auth import authorize
 from blocks_genesis._message.message_configuration import AzureServiceBusConfiguration, RabbitMqConfiguration, ConsumerSubscription, MessageConfiguration
-from blocks_genesis._core.change_context import change_context
 from blocks_genesis._core.azure_key_vault import AzureKeyVault
 
 __all__ = [
@@ -46,7 +45,6 @@ __all__ = [
     "CryptoService",
     "AzureServiceBusConfiguration",
     "authorize",
-    "change_context",
     "fast_api_app",
     "AzureKeyVault"
 ]

@@ -201,13 +201,14 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
                 pass
             return BlocksContextManager.normalize_domain(url)
 
-        allowed = [extract_domain(d) for d in (tenant.allowed_domains or []) if d]
-        
-        # Also add application domains from Applications array
-        if tenant.applications:
-            for app in tenant.applications:
-                if app.domain:
-                    allowed.append(extract_domain(app.domain))
+        # Allowed domains are derived solely from the tenant's Applications array.
+        # (The legacy tenant.allowed_domains field was removed from the Tenant
+        # model to mirror the blocks-genesis-net Tenant structure.)
+        allowed = [
+            extract_domain(app.domain)
+            for app in (tenant.applications or [])
+            if app.domain
+        ]
         
         current = (
             extract_domain(request.headers.get("origin") or "")
