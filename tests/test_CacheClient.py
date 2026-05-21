@@ -10,6 +10,10 @@ class DummyCacheClient(CacheClient):
         raise NotImplementedError()
     def get_string_value(self, key):
         raise NotImplementedError()
+    def add_bytes_value(self, key, value, key_life_span=None):
+        raise NotImplementedError()
+    def get_bytes_value(self, key):
+        raise NotImplementedError()
     def remove_key(self, key):
         raise NotImplementedError()
     def add_hash_value(self, key, value, key_life_span=None):
@@ -21,6 +25,10 @@ class DummyCacheClient(CacheClient):
     async def add_string_value_async(self, key, value, key_life_span=None):
         raise NotImplementedError()
     async def get_string_value_async(self, key):
+        raise NotImplementedError()
+    async def add_bytes_value_async(self, key, value, key_life_span=None):
+        raise NotImplementedError()
+    async def get_bytes_value_async(self, key):
         raise NotImplementedError()
     async def remove_key_async(self, key):
         raise NotImplementedError()
