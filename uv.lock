@@ -1827,7 +1827,7 @@ wheels = [
 
 [[package]]
 name = "seliseblocks-genesis"
-version = "0.2.28"
+version = "0.2.29"
 source = { editable = "." }
 dependencies = [
     { name = "aio-pika", version = "9.5.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },

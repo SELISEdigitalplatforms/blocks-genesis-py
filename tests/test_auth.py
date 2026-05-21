@@ -31,8 +31,8 @@ async def test_fetch_cert_bytes_file(mock_loop, mock_open):
 @patch('blocks_genesis._auth.auth.fetch_cert_bytes', new_callable=AsyncMock)
 async def test_get_tenant_cert_cache_miss(mock_fetch):
     cache_client = MagicMock()
-    cache_client.get_string_value.return_value = None
-    cache_client.add_string_value = AsyncMock()
+    cache_client.get_bytes_value.return_value = None
+    cache_client.add_bytes_value_async = AsyncMock()
     tenant = MagicMock()
     tenant.jwt_token_parameters.public_certificate_path = 'certpath'
     tenant.jwt_token_parameters.issue_date = datetime(2020, 1, 1, tzinfo=timezone.utc)
@@ -41,7 +41,7 @@ async def test_get_tenant_cert_cache_miss(mock_fetch):
     mock_fetch.return_value = b'certdata'
     result = await auth.get_tenant_cert(cache_client, tenant, 'tid')
     assert result == b'certdata'
-    cache_client.add_string_value.assert_awaited()
+    cache_client.add_bytes_value_async.assert_awaited()
 
 @patch('cryptography.hazmat.primitives.serialization.pkcs12.load_pkcs12')
 def test_create_certificate_success(mock_load):
