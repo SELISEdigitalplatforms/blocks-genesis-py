@@ -27,6 +27,16 @@ class CacheClient(ABC):
     def get_string_value(self, key: str) -> Optional[str]:
         """Get string value from cache"""
         pass
+
+    @abstractmethod
+    def add_bytes_value(self, key: str, value: bytes, key_life_span: Optional[int] = None) -> bool:
+        """Add byte value to cache with optional TTL"""
+        pass
+
+    @abstractmethod
+    def get_bytes_value(self, key: str) -> Optional[bytes]:
+        """Get byte value from cache"""
+        pass
     
     @abstractmethod
     def remove_key(self, key: str) -> bool:
@@ -57,6 +67,16 @@ class CacheClient(ABC):
     @abstractmethod
     async def get_string_value_async(self, key: str) -> Optional[str]:
         """Get string value from cache (async)"""
+        pass
+
+    @abstractmethod
+    async def add_bytes_value_async(self, key: str, value: bytes, key_life_span: Optional[int] = None) -> bool:
+        """Add byte value to cache with optional TTL (async)"""
+        pass
+
+    @abstractmethod
+    async def get_bytes_value_async(self, key: str) -> Optional[bytes]:
+        """Get byte value from cache (async)"""
         pass
     
     @abstractmethod
