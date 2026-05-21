@@ -581,21 +581,23 @@ async def _check_permission(
         return False
 
 
-def authorize(resource_name: str, bypass_authorization: bool = False):
+def authorize(resource_name: str = None, bypass_authorization: bool = False):
     """
     FastAPI dependency for authorization with mandatory resource protection.
-    
+
     Args:
-        resource_name: The protected resource name (required). Must be provided for authorization check.
+        resource_name: The protected resource name. Required for protected endpoints
+            (i.e. when bypass_authorization is False); optional when authorization
+            is bypassed since it is never used in that path.
         bypass_authorization: If True, skips authorization checks while still authenticating.
-    
+
     Returns:
         FastAPI Depends that authenticates and authorizes the request.
-    
+
     Raises:
-        ValueError: If resource_name is not provided or is empty.
+        ValueError: If resource_name is missing/empty on a protected (non-bypassed) endpoint.
     """
-    if not resource_name or not resource_name.strip():
+    if bypass_authorization is False and (not resource_name or not resource_name.strip()):
         raise ValueError("resource_name is required for protected endpoint authorization")
     
     async def dependency(request: Request):
