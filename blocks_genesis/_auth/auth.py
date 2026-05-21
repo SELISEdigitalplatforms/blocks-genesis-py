@@ -1,6 +1,5 @@
 import json
 import logging
-import base64
 import asyncio
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timezone
@@ -227,9 +226,9 @@ async def get_tenant_cert(cache_client: CacheClient, tenant: Tenant, tenant_id: 
     
     # Try cache first
     try:
-        cached = cache_client.get_string_value(cache_key)
+        cached = cache_client.get_bytes_value(cache_key)
         if cached:
-            return base64.b64decode(cached)
+            return cached
     except Exception:
         pass
     
@@ -253,8 +252,7 @@ async def get_tenant_cert(cache_client: CacheClient, tenant: Tenant, tenant_id: 
             ttl = max(60, days_remaining * 86400)  # At least 60 seconds
             
             if ttl > 0:
-                cached_value = base64.b64encode(cert_bytes).decode("utf-8")
-                await cache_client.add_string_value_async(cache_key, cached_value, ttl)
+                await cache_client.add_bytes_value_async(cache_key, cert_bytes, ttl)
     except Exception as e:
         _logger.warning(f"Failed to cache certificate: {e}")
     

@@ -86,6 +86,17 @@ class RedisClient(CacheClient):
         activity.set_property("operation", operation)
         activity.set_property("baggage.TenantId", BlocksContextManager.get_context().tenant_id if BlocksContextManager.get_context() else "miscellaneous")
         return activity
+
+    @staticmethod
+    def _coerce_bytes(value: Any) -> Optional[bytes]:
+        """Normalize Redis GET result to bytes (matches C# byte[] cache values)."""
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            return value
+        if isinstance(value, str):
+            return value.encode("latin-1")
+        return bytes(value)
     
     # Synchronous Methods
     def key_exists(self, key: str) -> bool:
@@ -128,6 +139,43 @@ class RedisClient(CacheClient):
                 result = self._sync_client.get(key)
                 activity.set_property("found", result is not None)
                 if result:
+                    activity.set_property("value_length", len(result))
+                return result
+            except Exception as ex:
+                activity.set_property("error", True)
+                activity.set_property("error_message", str(ex))
+                activity.set_status(StatusCode.ERROR, str(ex))
+                raise
+
+    def add_bytes_value(self, key: str, value: bytes, key_life_span: Optional[int] = None) -> bool:
+        """Add byte value to cache"""
+        print(f"Adding byte value to cache: {key} with length {len(value)} and TTL {key_life_span}")
+        with self._create_activity(key, "AddBytesValue") as activity:
+            try:
+                activity.set_property("value_length", len(value))
+                if key_life_span is not None:
+                    activity.set_property("ttl", key_life_span)
+                    result = self._sync_client.setex(key, key_life_span, value)
+                else:
+                    result = self._sync_client.set(key, value)
+
+                success = bool(result)
+                activity.set_property("success", success)
+                return success
+            except Exception as ex:
+                activity.set_property("error", True)
+                activity.set_property("error_message", str(ex))
+                activity.set_status(StatusCode.ERROR, str(ex))
+                raise
+
+    def get_bytes_value(self, key: str) -> Optional[bytes]:
+        print(f"Getting byte value from cache: {key}")
+        """Get byte value from cache"""
+        with self._create_activity(key, "GetBytesValue") as activity:
+            try:
+                result = self._coerce_bytes(self._sync_client.get(key))
+                activity.set_property("found", result is not None)
+                if result is not None:
                     activity.set_property("value_length", len(result))
                 return result
             except Exception as ex:
@@ -230,6 +278,43 @@ class RedisClient(CacheClient):
                 result = await client.get(key)
                 activity.set_property("found", result is not None)
                 if result:
+                    activity.set_property("value_length", len(result))
+                return result
+            except Exception as ex:
+                activity.set_property("error", True)
+                activity.set_property("error_message", str(ex))
+                activity.set_status(StatusCode.ERROR, str(ex))
+                raise
+
+    async def add_bytes_value_async(self, key: str, value: bytes, key_life_span: Optional[int] = None) -> bool:
+        """Add byte value to cache (async)"""
+        client = await self._get_async_client()
+        with self._create_activity(key, "AddBytesValue") as activity:
+            try:
+                activity.set_property("value_length", len(value))
+                if key_life_span is not None:
+                    activity.set_property("ttl", key_life_span)
+                    result = await client.setex(key, key_life_span, value)
+                else:
+                    result = await client.set(key, value)
+
+                success = bool(result)
+                activity.set_property("success", success)
+                return success
+            except Exception as ex:
+                activity.set_property("error", True)
+                activity.set_property("error_message", str(ex))
+                activity.set_status(StatusCode.ERROR, str(ex))
+                raise
+
+    async def get_bytes_value_async(self, key: str) -> Optional[bytes]:
+        """Get byte value from cache (async)"""
+        client = await self._get_async_client()
+        with self._create_activity(key, "GetBytesValue") as activity:
+            try:
+                result = self._coerce_bytes(await client.get(key))
+                activity.set_property("found", result is not None)
+                if result is not None:
                     activity.set_property("value_length", len(result))
                 return result
             except Exception as ex:
