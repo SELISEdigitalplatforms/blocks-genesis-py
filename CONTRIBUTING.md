@@ -278,7 +278,6 @@ config/
 
 ### Context and Multi-Tenancy
 
-- Always respect `project_key` context switching via `change_context(project_key=...)`.
 - Use `get_configurations()` for accessing runtime config.
 - Avoid hardcoding tenant IDs or project-specific values.
 
