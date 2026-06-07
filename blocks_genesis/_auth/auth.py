@@ -27,16 +27,16 @@ _logger = logging.getLogger(__name__)
 # TOKEN EXTRACTION
 # ============================================================================
 
-async def extract_token_from_request(request: Request, tenant_service: TenantService) -> Tuple[Optional[str], bool]:
+async def extract_token_from_request(request: Request, tenant_service: TenantService) -> Tuple[Optional[str], bool, Optional[str]]:
     """
     Extract token from request.
-    Returns: (token, is_third_party_token)
-    
+    Returns: (token, is_third_party_token, application_domain)
+
     Extraction priority:
     1. Authorization: Bearer <token> header
     2. Tenant-specific cookie (using application domain)
     3. Third-party provider cookie (from tenant config)
-    
+
     The is_third_party_token flag indicates whether the token came from
     third-party JWT parameters configuration.
     """
@@ -45,8 +45,8 @@ async def extract_token_from_request(request: Request, tenant_service: TenantSer
     if auth_header.lower().startswith("bearer "):
         token = auth_header[7:].strip()  # Remove "Bearer " prefix
         if token:
-            return token, False
-    
+            return token, False, BlocksContextManager.resolve_application_domain(request)
+
     # 2. Fall back to cookies
     return await _extract_token_from_cookie(request, tenant_service)
 
@@ -122,6 +122,35 @@ async def fetch_cert_bytes(cert_url: str) -> bytes:
 # MAIN AUTHENTICATION HANDLER
 # ============================================================================
 
+async def _resolve_signing_tenant(
+    token: str,
+    tenant: Tenant,
+    tenant_id: Optional[str],
+    tenant_service: TenantService,
+) -> Tenant:
+    """
+    Resolve the tenant whose signing key produced the token.
+
+    For impersonation tokens the signature is created by the original (home)
+    tenant, so the token's `original_tenant_id` must be used to load the
+    verification certificate/issuer instead of the (impersonated) context
+    tenant. For all other tokens this returns the provided tenant unchanged.
+    """
+    try:
+        claims = jwt.decode(token, options={"verify_signature": False})
+    except Exception:
+        return tenant
+
+    if claims.get("impersonated"):
+        signer_id = claims.get("original_tenant_id")
+        if signer_id and signer_id != tenant_id:
+            signer_tenant = await tenant_service.get_tenant(signer_id)
+            if signer_tenant:
+                return signer_tenant
+
+    return tenant
+
+
 async def authenticate(
     request: Request,
     tenant_service: TenantService,
@@ -173,9 +202,17 @@ async def authenticate(
         if not payload:
             raise HTTPException(status_code=401, detail="Token validation failed")
     else:
+        # Resolve the tenant whose key actually SIGNED the token. Impersonation
+        # tokens are signed by the original (home) tenant and carry its id in the
+        # `iss` / `original_tenant_id` claims, whereas the context tenant_id is the
+        # impersonated tenant. Verifying against the impersonated tenant's cert
+        # would fail signature, so always verify against the signer. Downstream
+        # scoping (create_from_jwt_claims) still uses the impersonated tenant_id.
+        signing_tenant = await _resolve_signing_tenant(token, tenant, tenant_id, tenant_service)
+
         # Tenant token: try primary validation first, then fallback
         try:
-            payload = await validate_jwt_token(token, tenant, cache_client, request)
+            payload = await validate_jwt_token(token, signing_tenant, cache_client, request)
         except HTTPException:
             # If primary fails, try fallback validation
             _logger.info("Primary validation failed, attempting fallback")
