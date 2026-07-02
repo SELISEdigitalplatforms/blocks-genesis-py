@@ -21,7 +21,6 @@ class BlocksContext(BaseModel):
     REQUEST_URI_CLAIM: ClassVar[str] = "request_uri"
     TOKEN_CLAIM: ClassVar[str] = "oauth"
     PERMISSION_CLAIM: ClassVar[str] = "permissions"
-    SERVICE_ACCESS_CLAIM: ClassVar[str] = "service_access"
     ORGANIZATION_ID_CLAIM: ClassVar[str] = "org_id"
     EMAIL_CLAIM: ClassVar[str] = "email"
     USER_NAME_CLAIM: ClassVar[str] = "user_name"
