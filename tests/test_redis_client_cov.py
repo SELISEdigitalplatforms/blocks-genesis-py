@@ -330,3 +330,240 @@ async def test_publish_error():
     c, _, ac = _aclient(); ac.publish = AsyncMock(side_effect=Exception('x'))
     with pytest.raises(Exception):
         await c.publish_async('ch', 'm')
+
+
+# ---------------- pub/sub: subscribe_async / unsubscribe_async ----------------
+
+class FakeTask:
+    def __init__(self, exc=None, cancel_exc=None):
+        self._exc = exc
+        self._cancel_exc = cancel_exc
+        self.cancelled = False
+    def cancel(self):
+        self.cancelled = True
+        if self._cancel_exc:
+            raise self._cancel_exc
+    def __await__(self):
+        if self._exc:
+            raise self._exc
+        return iter([])
+
+
+@pytest.mark.asyncio
+async def test_subscribe_empty_channel():
+    c, _, ac = _aclient()
+    with pytest.raises(ValueError):
+        await c.subscribe_async('', lambda a, b: None)
+
+
+@pytest.mark.asyncio
+async def test_subscribe_none_handler():
+    c, _, ac = _aclient()
+    with pytest.raises(ValueError):
+        await c.subscribe_async('ch', None)
+
+
+@pytest.mark.asyncio
+async def test_subscribe_success():
+    c, act, ac = _aclient()
+    c._handle_subscription = MagicMock(return_value=None)
+    pubsub = MagicMock(); pubsub.subscribe = AsyncMock()
+    ac.pubsub = MagicMock(return_value=pubsub)
+    with patch(RC + 'asyncio') as masync:
+        masync.create_task.return_value = 'task-obj'
+        h = lambda a, b: None
+        await c.subscribe_async('ch', h)
+    assert c._subscriptions['ch'] is h
+    assert c._pubsub_tasks['ch'] == 'task-obj'
+    act.set_property.assert_any_call('subscribed', True)
+
+
+@pytest.mark.asyncio
+async def test_subscribe_error_pops_subscription():
+    c, act, ac = _aclient()
+    ac.pubsub = MagicMock(side_effect=Exception('boom'))
+    with pytest.raises(Exception):
+        await c.subscribe_async('ch', lambda a, b: None)
+    assert 'ch' not in c._subscriptions
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_empty_channel():
+    c, _ = _client()
+    with pytest.raises(ValueError):
+        await c.unsubscribe_async('')
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_with_task():
+    c, act = _client()
+    t = FakeTask(exc=__import__('asyncio').CancelledError())
+    c._pubsub_tasks = {'ch': t}
+    c._subscriptions = {'ch': lambda a, b: None}
+    await c.unsubscribe_async('ch')
+    assert t.cancelled is True
+    assert 'ch' not in c._pubsub_tasks
+    assert 'ch' not in c._subscriptions
+    act.set_property.assert_any_call('unsubscribed', True)
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_without_task():
+    c, act = _client()
+    c._pubsub_tasks = {}
+    c._subscriptions = {'ch': lambda a, b: None}
+    await c.unsubscribe_async('ch')
+    assert 'ch' not in c._subscriptions
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_error():
+    c, act = _client()
+    c._pubsub_tasks = {'ch': FakeTask(cancel_exc=RuntimeError('x'))}
+    with pytest.raises(RuntimeError):
+        await c.unsubscribe_async('ch')
+
+
+# ---------------- _handle_subscription ----------------
+
+@pytest.mark.asyncio
+async def test_handle_subscription_messages():
+    c, _ = _client()
+    handler = MagicMock()
+    async def listen():
+        yield {'type': 'subscribe', 'channel': b'ch', 'data': 1}
+        yield {'type': 'message', 'channel': b'ch', 'data': b'hello'}
+        yield {'type': 'message', 'channel': 'ch2', 'data': 'world'}
+    pubsub = MagicMock()
+    pubsub.listen = MagicMock(return_value=listen())
+    pubsub.unsubscribe = AsyncMock(); pubsub.close = AsyncMock()
+    await c._handle_subscription(pubsub, 'ch', handler)
+    assert handler.call_count == 2
+    handler.assert_any_call('ch', 'hello')
+    handler.assert_any_call('ch2', 'world')
+    pubsub.unsubscribe.assert_awaited_once_with('ch')
+    pubsub.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_subscription_handler_error():
+    c, _ = _client()
+    c._logger = MagicMock()
+    handler = MagicMock(side_effect=Exception('bad'))
+    async def listen():
+        yield {'type': 'message', 'channel': b'ch', 'data': b'x'}
+    pubsub = MagicMock()
+    pubsub.listen = MagicMock(return_value=listen())
+    pubsub.unsubscribe = AsyncMock(); pubsub.close = AsyncMock()
+    await c._handle_subscription(pubsub, 'ch', handler)
+    assert c._logger.error.called
+    pubsub.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_subscription_cancelled():
+    c, _ = _client()
+    c._logger = MagicMock()
+    async def listen():
+        raise __import__('asyncio').CancelledError()
+        yield
+    pubsub = MagicMock()
+    pubsub.listen = MagicMock(return_value=listen())
+    pubsub.unsubscribe = AsyncMock(); pubsub.close = AsyncMock()
+    await c._handle_subscription(pubsub, 'ch', MagicMock())
+    pubsub.unsubscribe.assert_awaited_once_with('ch')
+
+
+@pytest.mark.asyncio
+async def test_handle_subscription_outer_error():
+    c, _ = _client()
+    c._logger = MagicMock()
+    async def listen():
+        raise RuntimeError('boom')
+        yield
+    pubsub = MagicMock()
+    pubsub.listen = MagicMock(return_value=listen())
+    pubsub.unsubscribe = AsyncMock(); pubsub.close = AsyncMock()
+    await c._handle_subscription(pubsub, 'ch', MagicMock())
+    assert c._logger.error.called
+    pubsub.close.assert_awaited_once()
+
+
+# ---------------- dispose / dispose_async ----------------
+
+def test_dispose_already_disposed():
+    c, _ = _client()
+    c._disposed = True
+    sc = c._sync_client
+    c.dispose()
+    sc.close.assert_not_called()
+
+
+def test_dispose_normal():
+    c, _ = _client()
+    c._subscriptions = {'a': 1, 'b': 2}
+    c.dispose()
+    assert c._disposed is True
+    assert c._subscriptions == {}
+    c._sync_client.close.assert_called_once()
+
+
+def test_dispose_no_sync_client():
+    c, _ = _client()
+    c._sync_client = None
+    c.dispose()
+    assert c._disposed is True
+
+
+@pytest.mark.asyncio
+async def test_dispose_async_already_disposed():
+    c, _ = _client()
+    c._disposed = True
+    await c.dispose_async()
+    assert c._disposed is True
+
+
+@pytest.mark.asyncio
+async def test_dispose_async_full():
+    c, _ = _client()
+    t = FakeTask(exc=__import__('asyncio').CancelledError())
+    c._pubsub_tasks = {'ch': t}
+    c._subscriptions = {'ch': 1}
+    ac = MagicMock(); ac.close = AsyncMock()
+    c._async_client = ac
+    await c.dispose_async()
+    assert t.cancelled is True
+    assert c._pubsub_tasks == {}
+    assert c._subscriptions == {}
+    ac.close.assert_awaited_once()
+    c._sync_client.close.assert_called_once()
+    assert c._disposed is True
+
+
+@pytest.mark.asyncio
+async def test_dispose_async_no_clients():
+    c, _ = _client()
+    c._async_client = None
+    c._sync_client = None
+    c._pubsub_tasks = {}
+    await c.dispose_async()
+    assert c._disposed is True
+
+
+# ---------------- context managers ----------------
+
+def test_context_manager_sync():
+    c, _ = _client()
+    c.dispose = MagicMock()
+    with c as x:
+        assert x is c
+    c.dispose.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_context_manager_async():
+    c, _ = _client()
+    c.dispose_async = AsyncMock()
+    async with c as x:
+        assert x is c
+    c.dispose_async.assert_awaited_once()
