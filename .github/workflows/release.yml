@@ -1,6 +1,9 @@
 name: Publish package to PyPI
 
 on:
+  push:
+    branches:
+      - inception
   release:
     types: [published]
 
@@ -16,7 +19,7 @@ jobs:
       - name: Check out release source
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -41,7 +44,7 @@ jobs:
           path: dist/
 
   publish-to-pypi:
-    name: Publish distribution to PyPI
+    name: Publish distribution
     needs: build
     runs-on: ubuntu-latest
     permissions:
