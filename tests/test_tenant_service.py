@@ -77,7 +77,7 @@ async def test_get_tenant_by_domain(mock_motor, mock_cache_provider, mock_get_se
     mock_cache_provider.get_client.return_value = MagicMock()
     service = tenant_service.TenantService()
     mock_db = MagicMock()
-    mock_db.__getitem__.return_value.find_one = AsyncMock(return_value={'TenantId': 'tid', 'JwtTokenParameters': {}})
+    mock_db.__getitem__.return_value.find_one = AsyncMock(return_value={'_id': 'tid', 'TenantId': 'tid', 'JwtTokenParameters': {}})
     service.database = mock_db
     tenant = await service.get_tenant_by_domain('domain')
     assert tenant is not None
@@ -96,7 +96,7 @@ async def test_get_db_connection(mock_get_tenant):
 def test__load_tenant_from_db():
     service = tenant_service.TenantService.__new__(tenant_service.TenantService)
     mock_db = MagicMock()
-    mock_db.__getitem__.return_value.find_one = AsyncMock(return_value={'TenantId': 'tid', 'JwtTokenParameters': {}})
+    mock_db.__getitem__.return_value.find_one = AsyncMock(return_value={'_id': 'tid', 'TenantId': 'tid', 'JwtTokenParameters': {}})
     service.database = mock_db
     service._collection_name = 'Tenants'
     import asyncio
