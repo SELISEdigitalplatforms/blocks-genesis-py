@@ -20,10 +20,11 @@ async def test_dispatch_excluded_paths(mock_ctx_mgr, mock_activity, mock_get_ten
 @patch('blocks_genesis._middlewares.tenant_middleware.Activity')
 @patch('blocks_genesis._middlewares.tenant_middleware.BlocksContextManager')
 async def test_dispatch_missing_tenant(mock_ctx_mgr, mock_activity, mock_get_tenant_service):
-    middleware = TenantValidationMiddleware(MagicMock())
+    middleware = TenantValidationMiddleware(MagicMock(), included_paths=['/not-excluded'])
+    mock_ctx_mgr.is_localhost_host.return_value = False
     request = MagicMock(spec=Request)
     request.url.path = '/not-excluded'
-    request.headers.get.return_value = None
+    request.headers = {}
     request.query_params.get.return_value = None
     request.base_url.hostname = 'host'
     tenant_service = mock_get_tenant_service.return_value
@@ -59,10 +60,10 @@ async def test_dispatch_valid_tenant(mock_ctx_mgr, mock_activity, mock_get_tenan
 @patch('blocks_genesis._middlewares.tenant_middleware.Activity')
 @patch('blocks_genesis._middlewares.tenant_middleware.BlocksContextManager')
 async def test_dispatch_invalid_origin(mock_ctx_mgr, mock_activity, mock_get_tenant_service):
-    middleware = TenantValidationMiddleware(MagicMock())
+    middleware = TenantValidationMiddleware(MagicMock(), included_paths=['/not-excluded'])
     request = MagicMock(spec=Request)
     request.url.path = '/not-excluded'
-    request.headers.get.return_value = 'api-key'
+    request.headers = {'x-blocks-key': 'api-key'}
     request.query_params.get.return_value = None
     tenant = MagicMock()
     tenant.is_disabled = False
