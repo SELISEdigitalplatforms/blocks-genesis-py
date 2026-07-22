@@ -527,3 +527,212 @@ async def test_validate_with_fallback_all_fail(mock_jwks, mock_pc):
     tenant.third_party_jwt_token_parameters.public_certificate_path = '/p'
     mock_jwks.return_value = None; mock_pc.return_value = None
     assert await auth.validate_with_fallback('tok', tenant, MagicMock()) is None
+
+
+@pytest.mark.asyncio
+async def test_check_standard_access_no_resource():
+    assert await auth.check_standard_access(MagicMock(), '', MagicMock()) is False
+
+
+@pytest.mark.asyncio
+async def test_check_standard_access_no_context():
+    assert await auth.check_standard_access(None, 'res', MagicMock()) is False
+    ctx = MagicMock(); ctx.tenant_id = None
+    assert await auth.check_standard_access(ctx, 'res', MagicMock()) is False
+
+
+@pytest.mark.asyncio
+@patch(AU + '_check_quota', new_callable=AsyncMock)
+async def test_check_standard_access_quota_exceeded(mock_q):
+    mock_q.return_value = False
+    ctx = MagicMock(); ctx.tenant_id = 'tid'
+    assert await auth.check_standard_access(ctx, 'res', MagicMock()) is False
+
+
+@pytest.mark.asyncio
+@patch(AU + '_check_permission', new_callable=AsyncMock)
+@patch(AU + '_check_quota', new_callable=AsyncMock)
+async def test_check_standard_access_permission_ok(mock_q, mock_p):
+    mock_q.return_value = True; mock_p.return_value = True
+    ctx = MagicMock(); ctx.tenant_id = 'tid'; ctx.roles = ['r']; ctx.permissions = ['p']; ctx.impersonated = False
+    assert await auth.check_standard_access(ctx, 'res', MagicMock()) is True
+
+
+@pytest.mark.asyncio
+@patch(AU + '_check_permission', new_callable=AsyncMock)
+@patch(AU + '_check_quota', new_callable=AsyncMock)
+async def test_check_standard_access_impersonated(mock_q, mock_p):
+    mock_q.return_value = True; mock_p.return_value = False
+    ctx = MagicMock(); ctx.tenant_id = 'tid'; ctx.roles = None; ctx.permissions = None
+    ctx.impersonated = True; ctx.original_tenant_id = 'orig'
+    assert await auth.check_standard_access(ctx, 'res', MagicMock()) is False
+
+
+@pytest.mark.asyncio
+async def test_check_quota_returns_true():
+    ctx = MagicMock(); ctx.tenant_id = 'tid'
+    assert await auth._check_quota(ctx, 'res', MagicMock()) is True
+
+
+@pytest.mark.asyncio
+@patch(AU + 'BlocksContextManager')
+async def test_check_permission_no_effective_tenant(mock_bcm):
+    mock_bcm.get_context.return_value = None
+    assert await auth._check_permission('res', ['r'], ['p'], None, MagicMock()) is False
+
+
+@pytest.mark.asyncio
+@patch(AU + 'BlocksContextManager')
+async def test_check_permission_no_roles_no_perms(mock_bcm):
+    bc = MagicMock(); bc.impersonated = False; bc.tenant_id = 'tid'; bc.organization_id = 'org'
+    mock_bcm.get_context.return_value = bc
+    dbc = MagicMock(); dbc.get_collection = AsyncMock()
+    assert await auth._check_permission('res', [], [], 'tid', dbc) is False
+
+
+@pytest.mark.asyncio
+@patch(AU + 'BlocksContextManager')
+async def test_check_permission_has_access(mock_bcm):
+    bc = MagicMock(); bc.impersonated = False; bc.tenant_id = 'tid'; bc.organization_id = 'org'
+    mock_bcm.get_context.return_value = bc
+    coll = MagicMock(); coll.count_documents = AsyncMock(return_value=1)
+    dbc = MagicMock(); dbc.get_collection = AsyncMock(return_value=coll)
+    assert await auth._check_permission('res', ['r'], ['p'], 'tid', dbc) is True
+
+
+@pytest.mark.asyncio
+@patch(AU + 'BlocksContextManager')
+async def test_check_permission_denied_no_org(mock_bcm):
+    bc = MagicMock(); bc.impersonated = False; bc.tenant_id = 'tid'; bc.organization_id = None
+    mock_bcm.get_context.return_value = bc
+    coll = MagicMock(); coll.count_documents = AsyncMock(return_value=0)
+    dbc = MagicMock(); dbc.get_collection = AsyncMock(return_value=coll)
+    assert await auth._check_permission('res', ['r'], [], 'tid', dbc) is False
+
+
+@pytest.mark.asyncio
+@patch(AU + 'BlocksContextManager')
+async def test_check_permission_impersonated(mock_bcm):
+    bc = MagicMock(); bc.impersonated = True; bc.original_tenant_id = 'orig'; bc.organization_id = 'org'
+    mock_bcm.get_context.return_value = bc
+    coll = MagicMock(); coll.count_documents = AsyncMock(return_value=1)
+    dbc = MagicMock(); dbc.get_collection = AsyncMock(return_value=coll)
+    assert await auth._check_permission('res', [], ['p'], 'tid', dbc) is True
+
+
+@pytest.mark.asyncio
+@patch(AU + 'BlocksContextManager')
+async def test_check_permission_bc_none_uses_arg(mock_bcm):
+    mock_bcm.get_context.return_value = None
+    coll = MagicMock(); coll.count_documents = AsyncMock(return_value=1)
+    dbc = MagicMock(); dbc.get_collection = AsyncMock(return_value=coll)
+    assert await auth._check_permission('res', ['r'], ['p'], 'tid', dbc) is True
+
+
+@pytest.mark.asyncio
+@patch(AU + 'BlocksContextManager')
+async def test_check_permission_exception(mock_bcm):
+    mock_bcm.get_context.side_effect = Exception('boom')
+    assert await auth._check_permission('res', ['r'], ['p'], 'tid', MagicMock()) is False
+
+
+def test_authorize_missing_resource_raises():
+    with pytest.raises(ValueError):
+        auth.authorize()
+
+
+@pytest.mark.asyncio
+@patch(AU + 'check_standard_access', new_callable=AsyncMock)
+@patch(AU + 'authenticate', new_callable=AsyncMock)
+@patch(AU + 'BlocksContextManager')
+@patch(AU + 'DbContext')
+@patch(AU + 'CacheProvider')
+@patch(AU + 'TenantService')
+async def test_authorize_dependency_success(mock_ts, mock_cp, mock_db, mock_bcm, mock_auth, mock_csa):
+    dep = auth.authorize('res')
+    ctx = MagicMock(); mock_bcm.get_context.return_value = ctx
+    mock_csa.return_value = True
+    assert await dep.dependency(MagicMock()) is ctx
+
+
+@pytest.mark.asyncio
+@patch(AU + 'authenticate', new_callable=AsyncMock)
+@patch(AU + 'BlocksContextManager')
+@patch(AU + 'DbContext')
+@patch(AU + 'CacheProvider')
+@patch(AU + 'TenantService')
+async def test_authorize_dependency_no_context(mock_ts, mock_cp, mock_db, mock_bcm, mock_auth):
+    dep = auth.authorize('res')
+    mock_bcm.get_context.return_value = None
+    with pytest.raises(HTTPException):
+        await dep.dependency(MagicMock())
+
+
+@pytest.mark.asyncio
+@patch(AU + 'authenticate', new_callable=AsyncMock)
+@patch(AU + 'BlocksContextManager')
+@patch(AU + 'DbContext')
+@patch(AU + 'CacheProvider')
+@patch(AU + 'TenantService')
+async def test_authorize_dependency_bypass(mock_ts, mock_cp, mock_db, mock_bcm, mock_auth):
+    dep = auth.authorize(bypass_authorization=True)
+    ctx = MagicMock(); mock_bcm.get_context.return_value = ctx
+    assert await dep.dependency(MagicMock()) is ctx
+
+
+@pytest.mark.asyncio
+@patch(AU + 'check_standard_access', new_callable=AsyncMock)
+@patch(AU + 'authenticate', new_callable=AsyncMock)
+@patch(AU + 'BlocksContextManager')
+@patch(AU + 'DbContext')
+@patch(AU + 'CacheProvider')
+@patch(AU + 'TenantService')
+async def test_authorize_dependency_no_access(mock_ts, mock_cp, mock_db, mock_bcm, mock_auth, mock_csa):
+    dep = auth.authorize('res')
+    ctx = MagicMock(); mock_bcm.get_context.return_value = ctx
+    mock_csa.return_value = False
+    with pytest.raises(HTTPException):
+        await dep.dependency(MagicMock())
+
+
+@pytest.mark.asyncio
+@patch(AU + 'fetch_cert_bytes', new_callable=AsyncMock)
+async def test_get_tenant_cert_fetch_returns_none(mock_fetch):
+    tenant = MagicMock()
+    tenant.jwt_token_parameters.public_certificate_path = '/p'
+    cache = MagicMock(); cache.get_bytes_value.return_value = None
+    mock_fetch.return_value = None
+    assert await auth.get_tenant_cert(cache, tenant, 'tid') is None
+
+
+@pytest.mark.asyncio
+@patch(AU + '_validate_via_jwks', new_callable=AsyncMock)
+async def test_validate_with_fallback_jwks_fails_no_cert_path(mock_jwks):
+    tenant = MagicMock()
+    tenant.third_party_jwt_token_parameters.jwks_url = 'http://j'
+    tenant.third_party_jwt_token_parameters.public_certificate_path = None
+    mock_jwks.return_value = None
+    assert await auth.validate_with_fallback('tok', tenant, MagicMock()) is None
+
+
+@pytest.mark.asyncio
+@patch(AU + '_validate_via_public_cert', new_callable=AsyncMock)
+async def test_validate_with_fallback_no_jwks_url_cert_success(mock_pc):
+    tenant = MagicMock()
+    tenant.third_party_jwt_token_parameters.jwks_url = None
+    tenant.third_party_jwt_token_parameters.public_certificate_path = '/p'
+    mock_pc.return_value = {'sub': 'u3'}
+    req = MagicMock(); req.url = 'http://x'
+    assert (await auth.validate_with_fallback('tok', tenant, req))['sub'] == 'u3'
+
+
+@pytest.mark.asyncio
+@patch(AU + 'fetch_cert_bytes', new_callable=AsyncMock)
+async def test_get_tenant_cert_naive_issue_date(mock_fetch):
+    tenant = MagicMock()
+    tenant.jwt_token_parameters.issue_date = datetime.now()
+    tenant.jwt_token_parameters.certificate_valid_for_number_of_days = 365
+    cache = MagicMock(); cache.get_bytes_value.return_value = None
+    cache.add_bytes_value_async = AsyncMock()
+    mock_fetch.return_value = b'cb'
+    assert await auth.get_tenant_cert(cache, tenant, 'tid') == b'cb'
