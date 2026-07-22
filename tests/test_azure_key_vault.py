@@ -2,29 +2,21 @@ import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 from blocks_genesis._core.azure_key_vault import AzureKeyVault
 
-@patch('blocks_genesis._core.azure_key_vault.EnvVaultConfig')
-@patch('blocks_genesis._core.azure_key_vault.DefaultAzureCredential')
-@patch('blocks_genesis._core.azure_key_vault.SecretClient')
-def test_azure_key_vault_init(mock_secret_client, mock_cred, mock_env):
-    mock_env.get_config.return_value = {
-        'KEYVAULT__CLIENTID': 'cid',
-        'KEYVAULT__CLIENTSECRET': 'csec',
-        'KEYVAULT__KEYVAULTURL': 'url',
-        'KEYVAULT__TENANTID': 'tid',
-    }
+def test_azure_key_vault_init():
     vault = AzureKeyVault()
-    assert vault.vault_url == 'url'
-    assert mock_cred.called
-    assert mock_secret_client.called
+    assert vault.vault_url is None
+    assert vault.credential is None
+    assert vault.secret_client is None
 
 @pytest.mark.asyncio
-@patch('blocks_genesis._core.azure_key_vault.AzureKeyVault._get_secret', new_callable=AsyncMock)
-async def test_get_secrets(mock__get_secret):
-    mock__get_secret.side_effect = lambda k: f'val-{k}'
-    vault = AzureKeyVault.__new__(AzureKeyVault)
-    vault._get_secret = mock__get_secret
-    keys = ['A', 'B']
-    result = await vault.get_secrets(keys)
+@patch('blocks_genesis._core.azure_key_vault.SecretClient')
+@patch('blocks_genesis._core.azure_key_vault.DefaultAzureCredential')
+@patch('blocks_genesis._core.azure_key_vault.EnvVaultConfig')
+async def test_get_secrets(mock_env, mock_cred, mock_secret_client):
+    mock_env.get_config.return_value = {'KEYVAULT__KEYVAULTURL': 'https://vault'}
+    vault = AzureKeyVault()
+    vault._get_secret = AsyncMock(side_effect=lambda k: f'val-{k}')
+    result = await vault.get_secrets(['A', 'B'])
     assert result == {'A': 'val-A', 'B': 'val-B'}
 
 @pytest.mark.asyncio
