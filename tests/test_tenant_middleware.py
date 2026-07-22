@@ -89,7 +89,7 @@ def test_is_valid_origin_or_referer():
     middleware = TenantValidationMiddleware(MagicMock())
     request = MagicMock()
     tenant = MagicMock()
-    tenant.allowed_domains = ['a.com']
-    tenant.application_domain = 'host'
+    _app = MagicMock(); _app.domain = 'http://a.com'
+    tenant.applications = [_app]
     request.headers.get.side_effect = lambda k: 'http://a.com' if k == 'origin' else None
     assert middleware._is_valid_origin_or_referer(request, tenant) 
