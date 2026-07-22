@@ -83,7 +83,7 @@ async def test_run(mock_setup_services):
     mock_worker = MagicMock()
     mock_worker.run = AsyncMock()
     mock_setup_services.return_value.__aenter__.return_value = mock_worker
-    await app.run()
+    await app.run(AsyncMock())
     mock_worker.run.assert_awaited()
 
 @pytest.mark.asyncio
@@ -95,4 +95,4 @@ async def test_run_keyboard_interrupt(mock_setup_services):
         raise KeyboardInterrupt()
     mock_worker.run = raise_interrupt
     mock_setup_services.return_value.__aenter__.return_value = mock_worker
-    await app.run() 
+    await app.run(AsyncMock()) 
