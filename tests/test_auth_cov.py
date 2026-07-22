@@ -363,3 +363,167 @@ async def test_get_tenant_cert_ttl_exception(mock_fetch):
     cache = MagicMock(); cache.get_bytes_value.return_value = None
     mock_fetch.return_value = b'cb'
     assert await auth.get_tenant_cert(cache, tenant, 'tid') == b'cb'
+
+
+@pytest.mark.asyncio
+@patch(AU + 'BlocksContextManager')
+async def test_cookie_no_app_domain(mock_bcm):
+    ctx = MagicMock(); ctx.tenant_id = 't1'
+    mock_bcm.get_context.return_value = ctx
+    mock_bcm.resolve_application_domain.return_value = None
+    ts = MagicMock(); ts.get_tenant = AsyncMock(return_value=None)
+    assert await auth._extract_token_from_cookie(MagicMock(), ts) == (None, False, None)
+
+
+@pytest.mark.asyncio
+async def test_validate_jwt_no_params():
+    tenant = MagicMock(); tenant.jwt_token_parameters = None
+    with pytest.raises(HTTPException):
+        await auth.validate_jwt_token('t', tenant, MagicMock(), MagicMock())
+
+
+@pytest.mark.asyncio
+@patch(AU + 'get_tenant_cert', new_callable=AsyncMock)
+async def test_validate_jwt_no_cert_bytes(mock_gtc):
+    mock_gtc.return_value = None
+    with pytest.raises(HTTPException):
+        await auth.validate_jwt_token('t', MagicMock(), MagicMock(), MagicMock())
+
+
+@pytest.mark.asyncio
+@patch(AU + 'create_certificate')
+@patch(AU + 'get_tenant_cert', new_callable=AsyncMock)
+async def test_validate_jwt_no_cert(mock_gtc, mock_cc):
+    mock_gtc.return_value = b'b'; mock_cc.return_value = None
+    with pytest.raises(HTTPException):
+        await auth.validate_jwt_token('t', MagicMock(), MagicMock(), MagicMock())
+
+
+@pytest.mark.asyncio
+@patch(AU + 'jwt')
+@patch(AU + 'create_certificate')
+@patch(AU + 'get_tenant_cert', new_callable=AsyncMock)
+async def test_validate_jwt_success(mock_gtc, mock_cc, mock_jwt):
+    mock_gtc.return_value = b'b'
+    cert = MagicMock(); cert.public_key.return_value.public_bytes.return_value.decode.return_value = 'pem'
+    mock_cc.return_value = cert
+    mock_jwt.decode.return_value = {'sub': 'u1'}
+    req = MagicMock(); req.url = 'http://x'
+    result = await auth.validate_jwt_token('tok', MagicMock(), MagicMock(), req)
+    assert result['sub'] == 'u1'
+
+
+@pytest.mark.asyncio
+@patch(AU + 'jwt')
+@patch(AU + 'create_certificate')
+@patch(AU + 'get_tenant_cert', new_callable=AsyncMock)
+async def test_validate_jwt_expired(mock_gtc, mock_cc, mock_jwt):
+    mock_gtc.return_value = b'b'
+    cert = MagicMock(); cert.public_key.return_value.public_bytes.return_value.decode.return_value = 'pem'
+    mock_cc.return_value = cert
+    mock_jwt.decode.side_effect = auth.ExpiredSignatureError()
+    with pytest.raises(HTTPException):
+        await auth.validate_jwt_token('tok', MagicMock(), MagicMock(), MagicMock())
+
+
+@pytest.mark.asyncio
+@patch(AU + 'jwt')
+@patch(AU + 'create_certificate')
+@patch(AU + 'get_tenant_cert', new_callable=AsyncMock)
+async def test_validate_jwt_invalid(mock_gtc, mock_cc, mock_jwt):
+    mock_gtc.return_value = b'b'
+    cert = MagicMock(); cert.public_key.return_value.public_bytes.return_value.decode.return_value = 'pem'
+    mock_cc.return_value = cert
+    mock_jwt.decode.side_effect = auth.InvalidTokenError('bad')
+    with pytest.raises(auth.InvalidTokenError):
+        await auth.validate_jwt_token('tok', MagicMock(), MagicMock(), MagicMock())
+
+
+@pytest.mark.asyncio
+@patch(AU + 'jwt')
+@patch(AU + 'PyJWKClient')
+async def test_validate_via_jwks_success(mock_pjc, mock_jwt):
+    mock_pjc.return_value.get_signing_key_from_jwt.return_value.key = 'k'
+    mock_jwt.decode.return_value = {'sub': 'u1'}
+    assert await auth._validate_via_jwks('tok', 'http://j', 'iss', ['aud']) == {'sub': 'u1'}
+
+
+@pytest.mark.asyncio
+@patch(AU + 'PyJWKClient')
+async def test_validate_via_jwks_exception(mock_pjc):
+    mock_pjc.side_effect = Exception('bad')
+    assert await auth._validate_via_jwks('tok', 'http://j', 'iss', ['aud']) is None
+
+
+@pytest.mark.asyncio
+@patch(AU + 'fetch_cert_bytes', new_callable=AsyncMock)
+async def test_validate_via_public_cert_no_bytes(mock_fetch):
+    mock_fetch.return_value = None
+    assert await auth._validate_via_public_cert('t', '/p', None, 'iss', ['aud']) is None
+
+
+@pytest.mark.asyncio
+@patch(AU + 'create_certificate')
+@patch(AU + 'fetch_cert_bytes', new_callable=AsyncMock)
+async def test_validate_via_public_cert_no_cert(mock_fetch, mock_cc):
+    mock_fetch.return_value = b'b'; mock_cc.return_value = None
+    assert await auth._validate_via_public_cert('t', '/p', None, 'iss', ['aud']) is None
+
+
+@pytest.mark.asyncio
+@patch(AU + 'jwt')
+@patch(AU + 'create_certificate')
+@patch(AU + 'fetch_cert_bytes', new_callable=AsyncMock)
+async def test_validate_via_public_cert_success(mock_fetch, mock_cc, mock_jwt):
+    mock_fetch.return_value = b'b'
+    cert = MagicMock(); cert.public_key.return_value.public_bytes.return_value = b'pem'
+    mock_cc.return_value = cert
+    mock_jwt.decode.return_value = {'sub': 'u1'}
+    assert await auth._validate_via_public_cert('t', '/p', None, 'iss', ['aud']) == {'sub': 'u1'}
+
+
+@pytest.mark.asyncio
+@patch(AU + 'fetch_cert_bytes', new_callable=AsyncMock)
+async def test_validate_via_public_cert_exception(mock_fetch):
+    mock_fetch.side_effect = Exception('bad')
+    assert await auth._validate_via_public_cert('t', '/p', None, 'iss', ['aud']) is None
+
+
+@pytest.mark.asyncio
+async def test_validate_with_fallback_no_params():
+    tenant = MagicMock(); tenant.third_party_jwt_token_parameters = None
+    assert await auth.validate_with_fallback('t', tenant, MagicMock()) is None
+
+
+@pytest.mark.asyncio
+@patch(AU + '_validate_via_jwks', new_callable=AsyncMock)
+async def test_validate_with_fallback_jwks(mock_jwks):
+    tenant = MagicMock()
+    tenant.third_party_jwt_token_parameters.jwks_url = 'http://j'
+    mock_jwks.return_value = {'sub': 'u1'}
+    req = MagicMock(); req.url = 'http://x'
+    assert (await auth.validate_with_fallback('tok', tenant, req))['sub'] == 'u1'
+
+
+@pytest.mark.asyncio
+@patch(AU + '_validate_via_public_cert', new_callable=AsyncMock)
+@patch(AU + '_validate_via_jwks', new_callable=AsyncMock)
+async def test_validate_with_fallback_public_cert(mock_jwks, mock_pc):
+    tenant = MagicMock()
+    tenant.third_party_jwt_token_parameters.jwks_url = 'http://j'
+    tenant.third_party_jwt_token_parameters.public_certificate_path = '/p'
+    mock_jwks.return_value = None
+    mock_pc.return_value = {'sub': 'u2'}
+    req = MagicMock(); req.url = 'http://x'
+    assert (await auth.validate_with_fallback('tok', tenant, req))['sub'] == 'u2'
+
+
+@pytest.mark.asyncio
+@patch(AU + '_validate_via_public_cert', new_callable=AsyncMock)
+@patch(AU + '_validate_via_jwks', new_callable=AsyncMock)
+async def test_validate_with_fallback_all_fail(mock_jwks, mock_pc):
+    tenant = MagicMock()
+    tenant.third_party_jwt_token_parameters.jwks_url = 'http://j'
+    tenant.third_party_jwt_token_parameters.public_certificate_path = '/p'
+    mock_jwks.return_value = None; mock_pc.return_value = None
+    assert await auth.validate_with_fallback('tok', tenant, MagicMock()) is None
