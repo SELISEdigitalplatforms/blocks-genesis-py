@@ -32,7 +32,7 @@ async def test_close_lifespan(mock_mongo, mock_client):
 
 def test_configure_middlewares():
     app = FastAPI()
-    api.configure_middlewares(app, is_local=True)
+    api.configure_genesis(app)
     from fastapi.testclient import TestClient
     with TestClient(app) as client:
         resp = client.get('/ping')
