@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from blocks_genesis._core import api
 
 @pytest.mark.asyncio
+@patch('blocks_genesis._core.api.RabbitMessageClient')
 @patch('blocks_genesis._core.api.SecretLoader')
 @patch('blocks_genesis._core.api.configure_logger')
 @patch('blocks_genesis._core.api.configure_tracing')
@@ -14,9 +15,11 @@ from blocks_genesis._core import api
 @patch('blocks_genesis._core.api.MongoDbContextProvider')
 @patch('blocks_genesis._core.api.AzureMessageClient')
 @patch('blocks_genesis._core.api.MessageConfiguration')
-async def test_configure_lifespan(mock_msg_config, mock_client, mock_mongo, mock_db, mock_init_tenant, mock_redis, mock_cache, mock_tracing, mock_logger, mock_secret_loader):
+async def test_configure_lifespan(mock_msg_config, mock_client, mock_mongo, mock_db, mock_init_tenant, mock_redis, mock_cache, mock_tracing, mock_logger, mock_secret_loader, mock_rabbit):
+    mock_secret_loader.return_value.load_secrets = AsyncMock()
     msg_config = MagicMock()
     await api.configure_lifespan('svc', msg_config)
+    mock_secret_loader.return_value.load_secrets.assert_awaited()
 
 @pytest.mark.asyncio
 @patch('blocks_genesis._core.api.AzureMessageClient')
