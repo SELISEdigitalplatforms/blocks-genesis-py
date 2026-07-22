@@ -91,7 +91,7 @@ async def test_authenticate_missing_token():
         await auth.authenticate(request, MagicMock(), MagicMock())
     assert exc.value.status_code == 401
 
-@patch('blocks_genesis._auth.auth.get_tenant_service')
+@patch('blocks_genesis._auth.auth.TenantService')
 @patch('blocks_genesis._auth.auth.CacheProvider.get_client')
 @patch('blocks_genesis._auth.auth.DbContext.get_provider')
 @patch('blocks_genesis._auth.auth.authenticate', new_callable=AsyncMock)
