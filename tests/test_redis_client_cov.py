@@ -190,3 +190,143 @@ def test_get_hash_error():
     c, _ = _client(); c._sync_client.hgetall.side_effect = Exception('x')
     with pytest.raises(Exception):
         c.get_hash_value('k')
+
+
+def _aclient():
+    c, act = _client()
+    ac = MagicMock()
+    c._get_async_client = AsyncMock(return_value=ac)
+    return c, act, ac
+
+
+@pytest.mark.asyncio
+async def test_key_exists_async():
+    c, _, ac = _aclient(); ac.exists = AsyncMock(return_value=1)
+    assert await c.key_exists_async('k') is True
+
+
+@pytest.mark.asyncio
+async def test_key_exists_async_error():
+    c, _, ac = _aclient(); ac.exists = AsyncMock(side_effect=Exception('x'))
+    with pytest.raises(Exception):
+        await c.key_exists_async('k')
+
+
+@pytest.mark.asyncio
+async def test_add_string_async():
+    c, _, ac = _aclient(); ac.setex = AsyncMock(return_value=True); ac.set = AsyncMock(return_value=True)
+    assert await c.add_string_value_async('k', 'v', 10) is True
+    assert await c.add_string_value_async('k', 'v') is True
+
+
+@pytest.mark.asyncio
+async def test_add_string_async_error():
+    c, _, ac = _aclient(); ac.set = AsyncMock(side_effect=Exception('x'))
+    with pytest.raises(Exception):
+        await c.add_string_value_async('k', 'v')
+
+
+@pytest.mark.asyncio
+async def test_get_string_async():
+    c, _, ac = _aclient(); ac.get = AsyncMock(return_value='val')
+    assert await c.get_string_value_async('k') == 'val'
+    ac.get = AsyncMock(return_value=None)
+    assert await c.get_string_value_async('k') is None
+
+
+@pytest.mark.asyncio
+async def test_get_string_async_error():
+    c, _, ac = _aclient(); ac.get = AsyncMock(side_effect=Exception('x'))
+    with pytest.raises(Exception):
+        await c.get_string_value_async('k')
+
+
+@pytest.mark.asyncio
+async def test_add_bytes_async():
+    c, _, ac = _aclient(); ac.setex = AsyncMock(return_value=True); ac.set = AsyncMock(return_value=True)
+    assert await c.add_bytes_value_async('k', b'v', 10) is True
+    assert await c.add_bytes_value_async('k', b'v') is True
+
+
+@pytest.mark.asyncio
+async def test_add_bytes_async_error():
+    c, _, ac = _aclient(); ac.set = AsyncMock(side_effect=Exception('x'))
+    with pytest.raises(Exception):
+        await c.add_bytes_value_async('k', b'v')
+
+
+@pytest.mark.asyncio
+async def test_get_bytes_async():
+    c, _, ac = _aclient(); ac.get = AsyncMock(return_value=b'v')
+    assert await c.get_bytes_value_async('k') == b'v'
+    ac.get = AsyncMock(return_value=None)
+    assert await c.get_bytes_value_async('k') is None
+
+
+@pytest.mark.asyncio
+async def test_get_bytes_async_error():
+    c, _, ac = _aclient(); ac.get = AsyncMock(side_effect=Exception('x'))
+    with pytest.raises(Exception):
+        await c.get_bytes_value_async('k')
+
+
+@pytest.mark.asyncio
+async def test_remove_key_async():
+    c, _, ac = _aclient(); ac.delete = AsyncMock(return_value=1)
+    assert await c.remove_key_async('k') is True
+
+
+@pytest.mark.asyncio
+async def test_remove_key_async_error():
+    c, _, ac = _aclient(); ac.delete = AsyncMock(side_effect=Exception('x'))
+    with pytest.raises(Exception):
+        await c.remove_key_async('k')
+
+
+@pytest.mark.asyncio
+async def test_add_hash_async():
+    c, _, ac = _aclient(); ac.hset = AsyncMock(); ac.expire = AsyncMock(return_value=True)
+    assert await c.add_hash_value_async('k', {'a': 1}, 10) is True
+    assert await c.add_hash_value_async('k', {'a': 1}) is True
+
+
+@pytest.mark.asyncio
+async def test_add_hash_async_error():
+    c, _, ac = _aclient(); ac.hset = AsyncMock(side_effect=Exception('x'))
+    with pytest.raises(Exception):
+        await c.add_hash_value_async('k', {'a': 1})
+
+
+@pytest.mark.asyncio
+async def test_get_hash_async():
+    c, _, ac = _aclient(); ac.hgetall = AsyncMock(return_value={'a': 1})
+    assert await c.get_hash_value_async('k') == {'a': 1}
+    ac.hgetall = AsyncMock(return_value={})
+    assert await c.get_hash_value_async('k') == {}
+
+
+@pytest.mark.asyncio
+async def test_get_hash_async_error():
+    c, _, ac = _aclient(); ac.hgetall = AsyncMock(side_effect=Exception('x'))
+    with pytest.raises(Exception):
+        await c.get_hash_value_async('k')
+
+
+@pytest.mark.asyncio
+async def test_publish_empty_channel():
+    c, _, ac = _aclient()
+    with pytest.raises(ValueError):
+        await c.publish_async('', 'm')
+
+
+@pytest.mark.asyncio
+async def test_publish_success():
+    c, _, ac = _aclient(); ac.publish = AsyncMock(return_value=3)
+    assert await c.publish_async('ch', 'm') == 3
+
+
+@pytest.mark.asyncio
+async def test_publish_error():
+    c, _, ac = _aclient(); ac.publish = AsyncMock(side_effect=Exception('x'))
+    with pytest.raises(Exception):
+        await c.publish_async('ch', 'm')
