@@ -36,33 +36,30 @@ class MongoBatchLogger:
             print(ex)
 
     def _create_collection_if_not_exists(self, db, collection_name: str):
-        try:
-            collection_exists = self._collection_exists(db, collection_name)
-            if not collection_exists:
-                db.create_collection(
-                    collection_name,
-                    timeseries={
-                        "timeField": "Timestamp",
-                        "metaField": "TenantId",
-                        "granularity": "minutes",
-                    },
-                    expireAfterSeconds=90 * 24 * 60 * 60,
-                )
-                return
+        collection_exists = self._collection_exists(db, collection_name)
+        if not collection_exists:
+            db.create_collection(
+                collection_name,
+                timeseries={
+                    "timeField": "Timestamp",
+                    "metaField": "TenantId",
+                    "granularity": "minutes",
+                },
+                expireAfterSeconds=90 * 24 * 60 * 60,
+            )
+            return
 
-            if not self._is_time_series_collection(db, collection_name):
-                db.drop_collection(collection_name)
-                db.create_collection(
-                    collection_name,
-                    timeseries={
-                        "timeField": "Timestamp",
-                        "metaField": "TenantId",
-                        "granularity": "minutes",
-                    },
-                    expireAfterSeconds=90 * 24 * 60 * 60,
-                )
-        except Exception:
-            raise
+        if not self._is_time_series_collection(db, collection_name):
+            db.drop_collection(collection_name)
+            db.create_collection(
+                collection_name,
+                timeseries={
+                    "timeField": "Timestamp",
+                    "metaField": "TenantId",
+                    "granularity": "minutes",
+                },
+                expireAfterSeconds=90 * 24 * 60 * 60,
+            )
 
     def _collection_exists(self, db, collection_name: str) -> bool:
         collections = db.list_collection_names(filter={"name": collection_name})

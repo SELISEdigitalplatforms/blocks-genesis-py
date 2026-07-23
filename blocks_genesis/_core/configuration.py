@@ -15,5 +15,5 @@ def load_configurations(config_dir: str, env: str = None):
 
 def get_configurations():
     if _app_configurations is None:
-        raise Exception("Configurations not loaded")
+        raise RuntimeError("Configurations not loaded")
     return _app_configurations
