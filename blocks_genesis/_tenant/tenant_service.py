@@ -273,11 +273,11 @@ class TenantService:
         """Sync wrapper for pub/sub clients that invoke callbacks without await."""
         try:
             _logger.info(f"Received update message on channel '{channel}'. Scheduling task.")
-            asyncio.create_task(self._handle_update(channel, message))
+            asyncio.create_task(self._handle_update(message))
         except Exception as e:
             _logger.exception(f"Error creating tenant update task: {e}")
 
-    async def _handle_update(self, channel: str, message: str):
+    async def _handle_update(self, message: str):
         """Process tenant update notifications and keep cache in sync."""
         try:
             _logger.info(f"Processing tenant update from message: {message}")

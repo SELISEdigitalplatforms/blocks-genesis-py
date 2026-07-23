@@ -131,7 +131,7 @@ def test__handle_update():
     service._apply_update_message = AsyncMock()
     import asyncio
     async def run():
-        await service._handle_update('chan', 'msg')
+        await service._handle_update('msg')
         service._apply_update_message.assert_awaited_once()
     asyncio.run(run())
 

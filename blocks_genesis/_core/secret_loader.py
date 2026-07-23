@@ -48,5 +48,5 @@ class SecretLoader:
 
 def get_blocks_secret() -> BlocksSecret:
     if _loaded_secret is None:
-        raise Exception("Secrets not loaded")
+        raise RuntimeError("Secrets not loaded")
     return _loaded_secret

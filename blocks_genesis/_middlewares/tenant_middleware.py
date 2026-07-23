@@ -74,7 +74,6 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
         if not any(path == p or path.startswith(p.rstrip("/ ") + "/") for p in self.included_paths):
             return await call_next(request)
 
-
         try:
             # Sanitize headers and query params for logging
             sanitized_headers = sanitize_dict(dict(request.headers))
@@ -84,26 +83,10 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
                 "http.headers": json.dumps(sanitized_headers)
             })
 
-            api_key = request.headers.get("x-blocks-key") or request.query_params.get("x-blocks-key") or request.query_params.get("tenant_id")
-            tenant: Tenant | None = None
-            tenant_service = get_tenant_service()
-
-            if not api_key:
-                request_host = request.base_url.hostname or ""
-                if BlocksContextManager.is_localhost_host(request_host):
-                    return self._reject(400, "BadRequest: Missing_Tenant_Key_Or_Id")
-
-                tenant = await tenant_service.get_tenant_by_domain(request_host)
-                if not tenant:
-                    return self._reject(404, "Not_Found: Application_Not_Found")
-            else:
-                tenant = await tenant_service.get_tenant(api_key)
-
-            if not tenant or tenant.is_disabled:
-                return self._reject(404, "Not_Found: Application_Not_Found")
-
-            if not self._is_valid_origin_or_referer(request, tenant):
-                return self._reject(406, "NotAcceptable: Invalid_Origin_Or_Referer")
+            resolved = await self._resolve_tenant_or_reject(request)
+            if isinstance(resolved, Response):
+                return resolved
+            tenant = resolved
 
             Activity.set_current_property("baggage.TenantId", tenant.tenant_id)
             Activity.set_current_property(
@@ -137,38 +120,7 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
 
             response = await call_next(request)
 
-            response_size = 0
-
-            def add_size(n: int):
-                nonlocal response_size
-                response_size += n
-
-            if hasattr(response, "body_iterator") and response.body_iterator is not None:
-                response.body_iterator = tee_body_iterator(
-                    response.body_iterator,
-                    add_size
-                )
-
-            Activity.set_current_property("request.size.bytes", request_size)
-            Activity.set_current_property("response.size.bytes", response_size)
-            Activity.set_current_property(
-                "throughput.total.bytes",
-                request_size + response_size
-            )
-            Activity.set_current_property("usage", True)
-
-            if not (200 <= response.status_code < 300):
-                Activity.set_current_property(
-                    StatusCode.ERROR,
-                    f"HTTP {response.status_code}"
-                )
-
-
-            sanitized_response_headers = sanitize_dict(dict(response.headers))
-            Activity.set_current_properties({
-                "response.status.code": response.status_code,
-                "response.headers": json.dumps(sanitized_response_headers),
-            })
+            self._instrument_response(response, request_size)
 
             return response
 
@@ -178,6 +130,73 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
 
         finally:
             BlocksContextManager.clear_context()
+
+    async def _resolve_tenant_or_reject(self, request: Request):
+        """Resolve the tenant from the x-blocks-key or the request host.
+
+        Returns the validated Tenant, or a rejection Response when the tenant
+        key/id is missing on a localhost request, the application is not found
+        or disabled, or the origin/referer is not allowed.
+        """
+        api_key = request.headers.get("x-blocks-key") or request.query_params.get("x-blocks-key") or request.query_params.get("tenant_id")
+        tenant_service = get_tenant_service()
+
+        if not api_key:
+            request_host = request.base_url.hostname or ""
+            if BlocksContextManager.is_localhost_host(request_host):
+                return self._reject(400, "BadRequest: Missing_Tenant_Key_Or_Id")
+
+            tenant = await tenant_service.get_tenant_by_domain(request_host)
+            if not tenant:
+                return self._reject(404, "Not_Found: Application_Not_Found")
+        else:
+            tenant = await tenant_service.get_tenant(api_key)
+
+        if not tenant or tenant.is_disabled:
+            return self._reject(404, "Not_Found: Application_Not_Found")
+
+        if not self._is_valid_origin_or_referer(request, tenant):
+            return self._reject(406, "NotAcceptable: Invalid_Origin_Or_Referer")
+
+        return tenant
+
+    def _instrument_response(self, response: Response, request_size: int):
+        """Attach request/response throughput metrics to the current activity.
+
+        Wraps the streaming body iterator to measure response bytes and records
+        size, throughput, status and sanitized response headers.
+        """
+        response_size = 0
+
+        def add_size(n: int):
+            nonlocal response_size
+            response_size += n
+
+        if hasattr(response, "body_iterator") and response.body_iterator is not None:
+            response.body_iterator = tee_body_iterator(
+                response.body_iterator,
+                add_size
+            )
+
+        Activity.set_current_property("request.size.bytes", request_size)
+        Activity.set_current_property("response.size.bytes", response_size)
+        Activity.set_current_property(
+            "throughput.total.bytes",
+            request_size + response_size
+        )
+        Activity.set_current_property("usage", True)
+
+        if not (200 <= response.status_code < 300):
+            Activity.set_current_property(
+                StatusCode.ERROR,
+                f"HTTP {response.status_code}"
+            )
+
+        sanitized_response_headers = sanitize_dict(dict(response.headers))
+        Activity.set_current_properties({
+            "response.status.code": response.status_code,
+            "response.headers": json.dumps(sanitized_response_headers),
+        })
 
     def _reject(self, status: int, message: str) -> Response:
         return JSONResponse(

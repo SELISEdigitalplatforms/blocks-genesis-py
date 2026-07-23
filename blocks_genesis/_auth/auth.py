@@ -54,49 +54,58 @@ async def extract_token_from_request(request: Request, tenant_service: TenantSer
 async def _extract_token_from_cookie(request: Request, tenant_service: TenantService) -> Tuple[Optional[str], bool, Optional[str]]:
     """
     Extract token from cookies.
-    
+
     1. Tries tenant-specific cookie using application domain
     2. Falls back to third-party token cookie from tenant config
-    
+
     Returns: (token, is_third_party_token, application_domain)
     """
     # Validate BlocksContext exists with tenant_id
     context = BlocksContextManager.get_context()
     if not context or not context.tenant_id:
         return None, False, None
-    
+
     # Resolve application domain from request headers (Origin > Referer > Host)
     application_domain = BlocksContextManager.resolve_application_domain(request)
 
-    # Localhost/dev fallback: support loopback equivalents when cookie was set on a different local host alias.
-    if application_domain and BlocksContextManager.is_localhost_host(application_domain):
-        for local_host in ("localhost", "127.0.0.1", "::1"):
-            if local_host == application_domain:
-                continue
-            token = request.cookies.get(local_host)
-            if token:
-                return token, False, application_domain  # Primary tenant token, not third-party
-            
+    # Localhost/dev fallback: support loopback equivalents when the cookie was set on a different local host alias.
+    local_token = _try_localhost_alias_cookie(request, application_domain)
+    if local_token:
+        return local_token, False, application_domain  # Primary tenant token, not third-party
+
     # 1. Try tenant-specific cookie using application domain as name
     if application_domain:
         token = request.cookies.get(application_domain)
         if token:
             return token, False, application_domain  # Primary tenant token, not third-party
-    
+
     # 2. Fall back to third-party token cookie
     tenant = await tenant_service.get_tenant(context.tenant_id)
     if not tenant or not tenant.third_party_jwt_token_parameters:
         return None, False, None
-    
+
     cookie_key = tenant.third_party_jwt_token_parameters.cookie_key
     if not cookie_key:
         return None, False, None
-    
+
     third_party_token = request.cookies.get(cookie_key)
     if third_party_token:
         return third_party_token, True, application_domain  # Third-party token from provider
-    
+
     return None, False, None
+
+
+def _try_localhost_alias_cookie(request: Request, application_domain: Optional[str]) -> Optional[str]:
+    """Return a cookie set under a loopback alias when the app domain is a localhost host."""
+    if not (application_domain and BlocksContextManager.is_localhost_host(application_domain)):
+        return None
+    for local_host in ("localhost", "127.0.0.1", "::1"):
+        if local_host == application_domain:
+            continue
+        token = request.cookies.get(local_host)
+        if token:
+            return token
+    return None
 
 
 # ============================================================================
@@ -158,68 +167,45 @@ async def authenticate(
 ) -> Dict[str, Any]:
     """
     Main authentication handler.
-    
+
     Flow:
     1. Extract token from Authorization header or cookies
     2. Resolve tenant ID (from claims or context)
     3. Load tenant configuration
-    4. Determine if token is third-party (based on tenant config)
-    5. Validate token (primary or fallback)
-    6. Create and store BlocksContext with metadata
-    7. Set activity properties
-    
+    4. Validate token (primary or fallback, impersonation-aware)
+    5. Create and store BlocksContext with metadata
+    6. Set activity properties
+
     Raises HTTPException on authentication failure.
     """
     if cache_client is None:
         cache_client = CacheProvider.get_client()
-    
+
     # 1. Extract token (returns token and whether it's from third-party provider)
     token, is_third_party, application_domain = await extract_token_from_request(request, tenant_service)
     if not token:
         raise HTTPException(status_code=401, detail="Token missing")
-    
+
     # 2. Resolve tenant ID from context
     context = BlocksContextManager.get_context()
     tenant_id = context.tenant_id if context else None
 
     if not tenant_id:
         tenant_id = request.headers.get("x-blocks-key") or request.query_params.get("x-blocks-key") or request.query_params.get("tenant_id")
-    
+
     # 3. Load tenant configuration
     tenant = await tenant_service.get_tenant(tenant_id) if tenant_id else None
     if not tenant:
         raise HTTPException(status_code=401, detail="Tenant not found")
-    
+
     # Store tenant in request state for later use
     request.state._blocks_tenant = tenant
-    
-    # 4. Validate token based on source
-    payload = None
-    
-    if is_third_party:
-        # Third-party token: use fallback validation (JWKS or public cert)
-        payload = await validate_with_fallback(token, tenant, request)
-        if not payload:
-            raise HTTPException(status_code=401, detail="Token validation failed")
-    else:
-        # Resolve the tenant whose key actually SIGNED the token. Impersonation
-        # tokens are signed by the original (home) tenant and carry its id in the
-        # `iss` / `original_tenant_id` claims, whereas the context tenant_id is the
-        # impersonated tenant. Verifying against the impersonated tenant's cert
-        # would fail signature, so always verify against the signer. Downstream
-        # scoping (create_from_jwt_claims) still uses the impersonated tenant_id.
-        signing_tenant = await _resolve_signing_tenant(token, tenant, tenant_id, tenant_service)
 
-        # Tenant token: try primary validation first, then fallback
-        try:
-            payload = await validate_jwt_token(token, signing_tenant, cache_client, request)
-        except HTTPException:
-            # If primary fails, try fallback validation
-            _logger.info("Primary validation failed, attempting fallback")
-            payload = await validate_with_fallback(token, tenant, request)
-            if not payload:
-                raise HTTPException(status_code=401, detail="Token validation failed")
-    
+    # 4. Validate token based on source (primary or fallback, impersonation-aware)
+    payload = await _validate_authenticated_token(
+        token, is_third_party, tenant, tenant_id, cache_client, request, tenant_service
+    )
+
     # 5. Create and store BlocksContext
     blocks_context = BlocksContextManager.create_from_jwt_claims(
         payload,
@@ -227,18 +213,61 @@ async def authenticate(
         application_domain=application_domain or ""
     )
     BlocksContextManager.set_context(blocks_context)
-    
+
     # 6. Set activity properties for tracing
     Activity.set_current_property("baggage.UserId", blocks_context.user_id)
     Activity.set_current_property("baggage.IsAuthenticated", "true")
     Activity.set_current_property("baggage.IsThirdPartyToken", str(is_third_party))
-    
+
     _logger.info(
         f"User {blocks_context.user_id} authenticated for tenant {blocks_context.tenant_id} "
         f"(third_party={is_third_party})"
     )
-    
+
     return payload
+
+
+async def _validate_authenticated_token(
+    token: str,
+    is_third_party: bool,
+    tenant: Any,
+    tenant_id: Optional[str],
+    cache_client: CacheClient,
+    request: Request,
+    tenant_service: TenantService,
+) -> Dict[str, Any]:
+    """Validate the token against the correct signer and return its JWT payload.
+
+    Third-party tokens use fallback (JWKS/public cert) validation. Tenant tokens
+    are verified against the tenant whose key actually signed them (impersonation
+    tokens are signed by the original tenant), falling back to JWKS/cert if the
+    primary signature check fails. Raises HTTPException when validation fails.
+    """
+    if is_third_party:
+        # Third-party token: use fallback validation (JWKS or public cert)
+        payload = await validate_with_fallback(token, tenant, request)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Token validation failed")
+        return payload
+
+    # Resolve the tenant whose key actually SIGNED the token. Impersonation
+    # tokens are signed by the original (home) tenant and carry its id in the
+    # `iss` / `original_tenant_id` claims, whereas the context tenant_id is the
+    # impersonated tenant. Verifying against the impersonated tenant's cert
+    # would fail signature, so always verify against the signer. Downstream
+    # scoping (create_from_jwt_claims) still uses the impersonated tenant_id.
+    signing_tenant = await _resolve_signing_tenant(token, tenant, tenant_id, tenant_service)
+
+    # Tenant token: try primary validation first, then fallback
+    try:
+        return await validate_jwt_token(token, signing_tenant, cache_client, request)
+    except HTTPException:
+        # If primary fails, try fallback validation
+        _logger.info("Primary validation failed, attempting fallback")
+        payload = await validate_with_fallback(token, tenant, request)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Token validation failed")
+        return payload
 
 def create_certificate(certificate_data: bytes, password: Optional[str] = None):
     """Load certificate from PKCS12 data."""

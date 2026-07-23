@@ -120,36 +120,7 @@ class RabbitMessageWorker:
         self, message: AbstractIncomingMessage, subscription: ConsumerSubscription
     ) -> None:
         """Handles a single incoming message: context → tracing → dispatch → always ACK."""
-        headers = message.headers or {}
-
-        def _decode(val) -> str:
-            if isinstance(val, bytes):
-                return val.decode("utf-8")
-            return str(val) if val is not None else ""
-
-        trace_id = _decode(headers.get("TraceId", ""))
-        span_id = _decode(headers.get("SpanId", ""))
-        tenant_id = _decode(headers.get("TenantId", ""))
-        security_context_raw = _decode(headers.get("SecurityContext", ""))
-        baggage_str = _decode(headers.get("Baggage", "{}"))
-
-        # Restore security context (mirrors .NET: BlocksContext.SetContext)
-        if security_context_raw:
-            try:
-                sc = json.loads(security_context_raw)
-                BlocksContextManager.set_context(BlocksContextManager.create(**sc))
-            except Exception:
-                logger.warning("Could not parse SecurityContext header.", exc_info=True)
-
-        # Restore trace context
-        context = None
-        if trace_id and span_id:
-            try:
-                context = TraceContextTextMapPropagator().extract(
-                    {"traceparent": f"00-{trace_id}-{span_id}-01"}
-                )
-            except Exception:
-                logger.warning("Could not extract trace context from headers.", exc_info=True)
+        tenant_id, security_context_raw, baggage_str, context = self._restore_message_context(message)
 
         with self._tracer.start_as_current_span(
             "process.messaging.rabbitmq",
@@ -191,6 +162,44 @@ class RabbitMessageWorker:
                 # Always ACK — mirrors .NET: BasicAckAsync in finally block
                 await message.ack()
                 BlocksContextManager.clear_context()
+
+    def _restore_message_context(self, message: AbstractIncomingMessage):
+        """Decode tracing/security headers and restore the security + trace context.
+
+        Returns (tenant_id, security_context_raw, baggage_str, trace_context).
+        """
+        headers = message.headers or {}
+
+        def _decode(val) -> str:
+            if isinstance(val, bytes):
+                return val.decode("utf-8")
+            return str(val) if val is not None else ""
+
+        trace_id = _decode(headers.get("TraceId", ""))
+        span_id = _decode(headers.get("SpanId", ""))
+        tenant_id = _decode(headers.get("TenantId", ""))
+        security_context_raw = _decode(headers.get("SecurityContext", ""))
+        baggage_str = _decode(headers.get("Baggage", "{}"))
+
+        # Restore security context (mirrors .NET: BlocksContext.SetContext)
+        if security_context_raw:
+            try:
+                sc = json.loads(security_context_raw)
+                BlocksContextManager.set_context(BlocksContextManager.create(**sc))
+            except Exception:
+                logger.warning("Could not parse SecurityContext header.", exc_info=True)
+
+        # Restore trace context
+        context = None
+        if trace_id and span_id:
+            try:
+                context = TraceContextTextMapPropagator().extract(
+                    {"traceparent": f"00-{trace_id}-{span_id}-01"}
+                )
+            except Exception:
+                logger.warning("Could not extract trace context from headers.", exc_info=True)
+
+        return tenant_id, security_context_raw, baggage_str, context
 
     async def stop(self) -> None:
         """Signals the worker to stop and closes the RabbitMQ connection."""

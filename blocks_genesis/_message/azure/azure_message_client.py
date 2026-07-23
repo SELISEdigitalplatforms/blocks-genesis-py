@@ -50,7 +50,7 @@ class AzureMessageClient(MessageClient):
     @classmethod
     def get_instance(cls) -> 'AzureMessageClient':
         if cls._instance is None:
-            raise Exception("AzureMessageClient not initialized. Call `initialize()` first.")
+            raise RuntimeError("AzureMessageClient not initialized. Call `initialize()` first.")
         return cls._instance
 
     def _initialize_senders(self):
