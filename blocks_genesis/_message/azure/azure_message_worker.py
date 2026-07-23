@@ -132,12 +132,7 @@ class AzureMessageWorker:
         security_context_raw = app_props.get("SecurityContext", "")
         baggage_str = app_props.get("Baggage", "{}")
 
-        if security_context_raw:
-            try:
-                sc = json.loads(security_context_raw)
-                BlocksContextManager.set_context(BlocksContextManager.create(**sc))
-            except Exception as ctx_err:
-                self._logger.warning("Invalid security context: %s", ctx_err)
+        self._restore_security_context(security_context_raw)
 
         cancellation_event = asyncio.Event()
         self._active_message_renewals[message_id] = cancellation_event
@@ -174,22 +169,7 @@ class AzureMessageWorker:
                     self._logger.warning("Invalid baggage JSON")
 
                 start_time = asyncio.get_event_loop().time()
-                if message.body is None:
-                    d = "{}"
-                else:
-                    body_bytes = (
-                        b"".join(message.body)
-                        if isinstance(
-                            message.body,
-                            (types.GeneratorType, collections.abc.Iterable),
-                        )
-                        else message.body
-                    )
-                    d = (
-                        body_bytes.decode("utf-8")
-                        if isinstance(body_bytes, (bytes, bytearray))
-                        else str(body_bytes)
-                    )
+                d = self._decode_message_body(message)
 
                 msg = EventMessage(**json.loads(d))
                 await self._consumer.process_message(msg.type, msg.body)
@@ -218,6 +198,32 @@ class AzureMessageWorker:
             self._active_message_renewals.pop(message_id, None)
             renewal_task.cancel()
             BlocksContextManager.clear_context()
+
+    def _restore_security_context(self, security_context_raw: str) -> None:
+        """Restore the security context from a serialized header value, if present."""
+        if not security_context_raw:
+            return
+        try:
+            sc = json.loads(security_context_raw)
+            BlocksContextManager.set_context(BlocksContextManager.create(**sc))
+        except Exception as ctx_err:
+            self._logger.warning("Invalid security context: %s", ctx_err)
+
+    def _decode_message_body(self, message: ServiceBusReceivedMessage) -> str:
+        """Decode the Service Bus message body to a UTF-8 string (empty JSON if absent)."""
+        if message.body is None:
+            return "{}"
+        body_bytes = (
+            b"".join(message.body)
+            if isinstance(
+                message.body,
+                (types.GeneratorType, collections.abc.Iterable),
+            )
+            else message.body
+        )
+        if isinstance(body_bytes, (bytes, bytearray)):
+            return body_bytes.decode("utf-8")
+        return str(body_bytes)
 
     async def start_auto_renewal_task(
         self,
