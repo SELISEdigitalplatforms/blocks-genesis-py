@@ -199,12 +199,12 @@ async def test_handle_update_wrapper():
 async def test_handle_update_paths():
     s = _svc()
     s._apply_update_message = AsyncMock()
-    await s._handle_update('chan', 'not json')
-    await s._handle_update('chan', TenantCacheUpdateMessage(action='bad', tenant_id='t1').model_dump_json(by_alias=True))
-    await s._handle_update('chan', TenantCacheUpdateMessage(action='remove', tenant_id='t1').model_dump_json(by_alias=True))
+    await s._handle_update('not json')
+    await s._handle_update(TenantCacheUpdateMessage(action='bad', tenant_id='t1').model_dump_json(by_alias=True))
+    await s._handle_update(TenantCacheUpdateMessage(action='remove', tenant_id='t1').model_dump_json(by_alias=True))
     s._apply_update_message.assert_awaited()
     s._parse_tenant_cache_update = MagicMock(side_effect=Exception('boom'))
-    await s._handle_update('chan', 'x')
+    await s._handle_update('x')
 
 
 @pytest.mark.asyncio
