@@ -11,6 +11,9 @@ from blocks_genesis._core.secret_loader import get_blocks_secret
 from blocks_genesis._lmt.activity import Activity
 
 
+_CHANNEL_EMPTY_ERROR = "Channel cannot be empty"
+
+
 class RedisClient(CacheClient):
     """Redis client implementation with Activity tracing"""
     
@@ -380,7 +383,7 @@ class RedisClient(CacheClient):
     async def publish_async(self, channel: str, message: str) -> int:
         """Publish message to channel"""
         if not channel:
-            raise ValueError("Channel cannot be empty")
+            raise ValueError(_CHANNEL_EMPTY_ERROR)
         
         client = await self._get_async_client()
         with self._create_activity(channel, "Publish") as activity:
@@ -398,7 +401,7 @@ class RedisClient(CacheClient):
     async def subscribe_async(self, channel: str, handler: Callable[[str, str], None]) -> None:
         """Subscribe to channel with handler"""
         if not channel:
-            raise ValueError("Channel cannot be empty")
+            raise ValueError(_CHANNEL_EMPTY_ERROR)
         if handler is None:
             raise ValueError("Handler cannot be None")
         
@@ -428,7 +431,7 @@ class RedisClient(CacheClient):
     async def unsubscribe_async(self, channel: str) -> None:
         """Unsubscribe from channel"""
         if not channel:
-            raise ValueError("Channel cannot be empty")
+            raise ValueError(_CHANNEL_EMPTY_ERROR)
         
         with self._create_activity(channel, "Unsubscribe") as activity:
             try:
