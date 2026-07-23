@@ -54,49 +54,58 @@ async def extract_token_from_request(request: Request, tenant_service: TenantSer
 async def _extract_token_from_cookie(request: Request, tenant_service: TenantService) -> Tuple[Optional[str], bool, Optional[str]]:
     """
     Extract token from cookies.
-    
+
     1. Tries tenant-specific cookie using application domain
     2. Falls back to third-party token cookie from tenant config
-    
+
     Returns: (token, is_third_party_token, application_domain)
     """
     # Validate BlocksContext exists with tenant_id
     context = BlocksContextManager.get_context()
     if not context or not context.tenant_id:
         return None, False, None
-    
+
     # Resolve application domain from request headers (Origin > Referer > Host)
     application_domain = BlocksContextManager.resolve_application_domain(request)
 
-    # Localhost/dev fallback: support loopback equivalents when cookie was set on a different local host alias.
-    if application_domain and BlocksContextManager.is_localhost_host(application_domain):
-        for local_host in ("localhost", "127.0.0.1", "::1"):
-            if local_host == application_domain:
-                continue
-            token = request.cookies.get(local_host)
-            if token:
-                return token, False, application_domain  # Primary tenant token, not third-party
-            
+    # Localhost/dev fallback: support loopback equivalents when the cookie was set on a different local host alias.
+    local_token = _try_localhost_alias_cookie(request, application_domain)
+    if local_token:
+        return local_token, False, application_domain  # Primary tenant token, not third-party
+
     # 1. Try tenant-specific cookie using application domain as name
     if application_domain:
         token = request.cookies.get(application_domain)
         if token:
             return token, False, application_domain  # Primary tenant token, not third-party
-    
+
     # 2. Fall back to third-party token cookie
     tenant = await tenant_service.get_tenant(context.tenant_id)
     if not tenant or not tenant.third_party_jwt_token_parameters:
         return None, False, None
-    
+
     cookie_key = tenant.third_party_jwt_token_parameters.cookie_key
     if not cookie_key:
         return None, False, None
-    
+
     third_party_token = request.cookies.get(cookie_key)
     if third_party_token:
         return third_party_token, True, application_domain  # Third-party token from provider
-    
+
     return None, False, None
+
+
+def _try_localhost_alias_cookie(request: Request, application_domain: Optional[str]) -> Optional[str]:
+    """Return a cookie set under a loopback alias when the app domain is a localhost host."""
+    if not (application_domain and BlocksContextManager.is_localhost_host(application_domain)):
+        return None
+    for local_host in ("localhost", "127.0.0.1", "::1"):
+        if local_host == application_domain:
+            continue
+        token = request.cookies.get(local_host)
+        if token:
+            return token
+    return None
 
 
 # ============================================================================
