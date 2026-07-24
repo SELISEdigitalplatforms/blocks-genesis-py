@@ -2,6 +2,8 @@
 name = "blocks-genesis"
 version = "0.3.1"
 description = "Reusable FastAPI utilities like middlewares, singletons, and more for Selise Blocks and Selise Genesis projects."
+readme = "README.md"
+license = {text = "MIT"}
 authors = [{name="Selise Blocks", email="mostafizur.rahman@selisegroup.com"}]
 keywords = ["Selise", "Selise Blocks", "Selise genesis", "Blocks genesis", "FastAPI", "Middlewares", "Singletons"]
 dependencies = [
@@ -44,8 +46,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/SELISEdigitalplatforms/l0-py-blocks-genesis"
-Repository = "https://github.com/SELISEdigitalplatforms/l0-py-blocks-genesis"
+Homepage = "https://github.com/SELISEdigitalplatforms/blocks-genesis-py"
+Repository = "https://github.com/SELISEdigitalplatforms/blocks-genesis-py"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
