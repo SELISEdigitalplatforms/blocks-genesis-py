@@ -1,436 +1,298 @@
 # Blocks Genesis
-> Reusable FastAPI building blocks for multi-tenant services: auth context, tenant resolution, Redis cache, MongoDB access, message bus integration, and observability.
 
-![Python](https://img.shields.io/badge/python-3.9%2B-blue)
-![Docker](https://img.shields.io/badge/docker-not%20bundled-lightgrey)
+> Reusable FastAPI building blocks for multi-tenant services: tenant resolution, auth context, Redis cache, MongoDB access, Azure Service Bus / RabbitMQ messaging, and OpenTelemetry-based observability.
+
+![PyPI](https://img.shields.io/pypi/v/blocks-genesis)
+![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![AI Framework](https://img.shields.io/badge/ai-framework%20agnostic-lightgrey)
 
 ## Table of Contents
 
 - [Overview](#overview)
 - [Features](#features)
-- [Architecture Overview](#architecture-overview)
-- [API / Endpoints](#api--endpoints)
-- [Tech Stack](#tech-stack)
-- [Prerequisites](#prerequisites)
+- [Requirements](#requirements)
 - [Installation](#installation)
-- [Configuration - Environment Variables](#configuration---environment-variables)
-- [Running the Project Locally](#running-the-project-locally)
-- [Usage](#usage)
+- [Quickstart](#quickstart)
+- [Public API](#public-api)
+- [Configuration](#configuration)
+- [Endpoints and Middleware Added by configure_genesis](#endpoints-and-middleware-added-by-configure_genesis)
+- [Sample Application](#sample-application)
+- [Versioning and Compatibility](#versioning-and-compatibility)
+- [Testing](#testing)
 - [Contributing](#contributing)
+- [Security](#security)
 - [License](#license)
 - [Maintainers](#maintainers)
 
 ## Overview
 
-SELISE Blocks Genesis is a Python package for bootstrapping production-oriented FastAPI services with consistent infrastructure patterns. It centralizes secret loading, tenant-aware context, authorization dependencies, cache/database providers, message bus clients, and telemetry setup.
+`blocks-genesis` is the shared Python foundation of the SELISE Blocks platform. It bootstraps production FastAPI services and background workers with consistent infrastructure wiring: secret loading from Azure Key Vault, tenant-aware request context, JWT authorization dependencies, Redis cache and MongoDB providers, message bus clients for Azure Service Bus and RabbitMQ, and OpenTelemetry tracing with MongoDB log/trace exporters.
 
-This project is intended for platform teams and backend engineers building multi-tenant APIs and asynchronous worker services in the SELISE Blocks ecosystem.
+It is consumed by the SELISE Blocks service repositories, so its exported names and signatures form a stable contract. See [Versioning and Compatibility](#versioning-and-compatibility).
 
 Key use cases:
 
-- Rapidly spin up a FastAPI service with shared middlewares and lifecycle wiring.
+- Spin up a FastAPI service with shared middlewares and lifecycle wiring.
 - Add tenant-aware authorization and context propagation across requests.
 - Integrate Redis, MongoDB, and either Azure Service Bus or RabbitMQ with minimal boilerplate.
 - Standardize tracing and log export behavior across services.
 
 ## Features
 
-- **FastAPI bootstrap utilities** - Creates app instances with consistent startup/shutdown lifecycle handling.
-- **Multi-tenant request middleware** - Resolves tenant from API key or domain and injects request context.
-- **Authorization dependency** - Provides JWT authentication and permission checks with root-tenant access logic.
-- **Tenant context switching** - Supports project-level context switching for shared-access scenarios.
-- **Azure Key Vault secret loading** - Loads service secrets into a typed secret model at startup.
-- **Redis cache provider** - Unified sync/async cache API with pub/sub and tracing metadata.
-- **MongoDB context provider** - Tenant-aware database/collection resolution with connection caching.
-- **Message bus abstraction** - Auto-resolves provider and supports Azure Service Bus or RabbitMQ.
-- **Worker runtime** - Runs event consumers with managed service initialization and graceful shutdown.
-- **Observability baseline** - OpenTelemetry tracing plus MongoDB log/trace exporters.
-- **Project configuration loader** - Environment-based JSON config loading via APP_ENV.
+- **FastAPI bootstrap utilities**: `fast_api_app`, `configure_lifespan`, `configure_genesis`, and `close_lifespan` wire the full service lifecycle.
+- **Multi-tenant request middleware**: resolves the tenant from the `x-blocks-key` header (or query parameter) or the request domain and injects request context.
+- **Authorization dependency**: `authorize()` provides JWT authentication (tenant certificate, JWKS, or third-party public certificate) plus role and permission checks.
+- **Azure Key Vault secret loading**: loads service secrets into the typed `BlocksSecret` model at startup using `DefaultAzureCredential`.
+- **Redis cache provider**: unified sync/async cache API with pub/sub and tracing metadata.
+- **MongoDB context provider**: tenant-aware database and collection resolution with connection caching.
+- **Message bus abstraction**: auto-detects the provider from the connection string (`amqp://`/`amqps://` selects RabbitMQ, anything else Azure Service Bus).
+- **Worker runtime**: `WorkerConsoleApp` runs event consumers with managed service initialization and graceful shutdown.
+- **Observability baseline**: OpenTelemetry tracing plus MongoDB log and trace exporters.
+- **Project configuration loader**: environment-keyed JSON config loading via `APP_ENV`.
 
-## Architecture Overview
+## Requirements
 
-```text
-+--------------------------------------------------------------+
-|                    Client / Upstream Apps                    |
-+--------------------------------------------------------------+
-                               |
-                               v
-+--------------------------------------------------------------+
-|                 FastAPI Service (api.py, /api)               |
-|  Routes: / /health /sse /ping /swagger/index.html /openapi   |
-+--------------------------------------------------------------+
-          |                    |                    |
-          v                    v                    v
-+---------------------------+ +-------------------+ +--------------------+
-| Tenant + Auth Pipeline    | | Message Client    | | Observability      |
-| x-blocks-key + JWT checks | | Azure or RabbitMQ | | OTel + Mongo export|
-+---------------------------+ +-------------------+ +--------------------+
-          |                    |                    |
-          v                    v                    v
-+---------------------------+ +-------------------+ +--------------------+
-| Redis Cache               | | Broker Infra      | | Mongo Logs/Traces  |
-| CacheConnectionString     | | Service Bus/RMQ   | | Log/Trace DB       |
-+---------------------------+ +-------------------+ +--------------------+
-          |
-          v
-+--------------------------------------------------------------+
-|           MongoDB Tenant Databases + Root Tenant DB          |
-|         DatabaseConnectionString + RootDatabaseName          |
-+--------------------------------------------------------------+
-                               |
-                               v
-+--------------------------------------------------------------+
-|                   Worker Service (worker.py)                 |
-|        Event consumers via WorkerConsoleApp lifecycle        |
-+--------------------------------------------------------------+
-```
-
-Internal package layout:
-
-- `_core` contains app/worker bootstrapping, configuration loading, secret loading, and context switching.
-- `_auth`, `_middlewares`, and `_tenant` implement context propagation and authorization policies.
-- `_cache`, `_database`, and `_message` provide infrastructure adapters.
-- `_lmt` implements logging, tracing, and telemetry exporters.
-
-## API / Endpoints
-
-Auth legend:
-
-```text
-Public   = No explicit authorize() dependency on the endpoint
-Bearer   = Authorization: Bearer <jwt> supported by auth pipeline
-API-Key  = x-blocks-key tenant key required by tenant middleware for tenant resolution
-```
-
-### API Application Router - /api/
-
-#### Core
-
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| GET | /api/ | Public + API-Key middleware path | Sample root endpoint; publishes an AiMessage to ai_queue and returns status payload. |
-
-#### Health
-
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| GET | /api/health | Public + API-Key middleware path | Health endpoint with authorize bypass enabled. |
-| GET | /api/ping | Public + API-Key middleware path | Internal health check endpoint added by shared middleware setup. |
-
-#### Streaming
-
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| POST | /api/sse | Public + API-Key middleware path | Server-sent events stream endpoint that emits five message chunks. |
-
-#### Documentation
-
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| GET | /api/swagger/index.html | Public + API-Key middleware path | Swagger UI endpoint (enabled when show_docs is true). |
-| GET | /api/openapi.json | Public + API-Key middleware path | OpenAPI schema endpoint (enabled when show_docs is true). |
-
-### Shared Middleware Router - /api/
-
-This router is injected by the shared `configure_middlewares` helper and contributes the following endpoints to any app that uses it.
-
-#### Health and Metadata
-
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| GET | /api/ping | Public + API-Key middleware path | Returns `{"status": "healthy", "message": "pong"}`. |
-| GET | /api/swagger/index.html | Public + API-Key middleware path | Returns Swagger UI HTML or `NOT_ALLOWED` depending on docs visibility. |
-| GET | /api/openapi.json | Public + API-Key middleware path | Returns OpenAPI JSON or empty object depending on docs visibility. |
-
-## Tech Stack
-
-| Layer | Technology |
+| Dependency | Notes |
 |---|---|
-| Runtime | CPython 3.9+ |
-| Language | Python |
-| AI/ML Framework | Framework-agnostic (no direct PyTorch/TensorFlow/LangChain dependency) |
-| Vector Store | Not bundled in this repository |
-| Database(s) | MongoDB (`pymongo`, `motor`) |
-| Cache | Redis (`redis`, `redis.asyncio`) |
-| Message Broker | Azure Service Bus (`azure-servicebus`) and RabbitMQ (`aio-pika`) |
-| Observability | OpenTelemetry API/SDK + custom MongoDB log/trace exporters |
-| Secret Management | Azure Key Vault (`azure-identity`, `azure-keyvault-secrets`) + dotenv bootstrap |
-| Auth Standard | JWT Bearer + tenant API key (`x-blocks-key`) |
-| API Docs | FastAPI OpenAPI + Swagger UI |
+| Python 3.12+ | Declared in `pyproject.toml` (`requires-python = ">=3.12"`). |
+| Redis | Cache provider and tenant update pub/sub. |
+| MongoDB | Tenant lookup, application data, log and trace export. |
+| Azure Key Vault | Runtime secret source; required by the current secret loader. |
+| Message broker | Azure Service Bus namespace or RabbitMQ instance, depending on configuration. |
 
-## Prerequisites
-
-| Tool | Minimum Version | Notes |
-|---|---|---|
-| Python | 3.9 | Required by `pyproject.toml`. |
-| pip | 23+ | Dependency installation for pip workflow. |
-| uv (optional) | Latest | Faster package installation workflow. |
-| Poetry (optional) | 1.6+ | Optional environment/dependency management. |
-| Redis | 6+ | Required for cache provider and tenant update pub/sub. |
-| MongoDB | 5+ | Required for tenant lookup, app data access, logs, and trace exports. |
-| Azure Key Vault access | N/A | Required in current implementation to load runtime secrets. |
-| Message broker | N/A | Azure Service Bus namespace or RabbitMQ instance depending on configuration. |
-| Docker (optional) | 24+ | No Dockerfile currently committed; optional for containerized local runs. |
+The backing services are needed at service startup (`configure_lifespan` / `WorkerConsoleApp`), not at import time.
 
 ## Installation
 
-### 1) Clone
+From PyPI:
+
+```bash
+pip install blocks-genesis
+```
+
+With uv:
+
+```bash
+uv add blocks-genesis
+```
+
+From source:
 
 ```bash
 git clone https://github.com/SELISEdigitalplatforms/blocks-genesis-py.git
 cd blocks-genesis-py
+uv sync
 ```
 
-### 2) Create Virtual Environment
+## Quickstart
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
+### API service
+
+```python
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+
+from blocks_genesis import (
+    AzureServiceBusConfiguration,
+    MessageConfiguration,
+    authorize,
+    close_lifespan,
+    configure_genesis,
+    configure_lifespan,
+    fast_api_app,
+)
+
+message_config = MessageConfiguration(
+    azure_service_bus_configuration=AzureServiceBusConfiguration(
+        queues=["demo_queue"],
+        topics=[],
+    )
+)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await configure_lifespan("my_service", message_config)
+    yield
+    await close_lifespan()
+
+
+app = fast_api_app(lifespan=lifespan)
+configure_genesis(app, show_docs=True)
+
+
+@app.get("/api/health", dependencies=[authorize(bypass_authorization=True)])
+async def health():
+    return {"status": "healthy"}
 ```
 
-Windows PowerShell:
+`configure_lifespan` loads secrets from Azure Key Vault, configures logging and tracing, initializes the Redis cache, tenant service, and MongoDB provider, and initializes the message client for the configured broker. It runs at application startup, so the backing services and the Key Vault environment variables described under [Configuration](#configuration) must be reachable when the server starts.
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+### Worker service
+
+```python
+from blocks_genesis import (
+    ConsumerSubscription,
+    MessageConfiguration,
+    RabbitMqConfiguration,
+    WorkerConsoleApp,
+)
+
+
+async def handle_demo_event(event_data):
+    print("received:", event_data)
+
+
+message_config = MessageConfiguration(
+    rabbit_mq_configuration=RabbitMqConfiguration(
+        consumer_subscriptions=[ConsumerSubscription.bind_to_queue("demo_queue")]
+    )
+)
+
+app = WorkerConsoleApp("my_worker", message_config, {"DemoEvent": handle_demo_event})
 ```
 
-### 3) Install Dependencies (pip)
+Start the consume loop with `asyncio.run(app.run(callback))`, where `callback` is an async function invoked once the worker is ready. The mapping passed as the third argument registers one handler per payload type.
 
-```bash
-pip install --upgrade pip
-pip install -e .
+### Publishing a message
+
+```python
+from blocks_genesis import AzureMessageClient, ConsumerMessage
+
+async def publish_demo():
+    client = AzureMessageClient.get_instance()
+    await client.send_to_consumer_async(ConsumerMessage(
+        consumer_name="demo_queue",
+        payload={"message": "hello"},
+        payload_type="DemoEvent",
+    ))
 ```
 
-### 4) Install Dependencies (uv)
+`AzureMessageClient.get_instance()` (or `RabbitMessageClient.get_instance()`) is available after `configure_lifespan` has initialized the client for the configured broker.
 
-```bash
-pip install uv
-uv pip install -e .
+## Public API
+
+Everything below is importable from the top-level `blocks_genesis` package.
+
+| Group | Exports |
+|---|---|
+| App and worker bootstrap | `fast_api_app`, `configure_lifespan`, `configure_genesis`, `close_lifespan`, `WorkerConsoleApp` |
+| Configuration | `load_configurations`, `get_configurations` |
+| Auth and context | `authorize`, `BlocksContext`, `BlocksContextManager` |
+| Tenancy | `Tenant`, `TenantService`, `get_tenant_service` |
+| Cache | `CacheClient`, `CacheProvider` |
+| Database | `DbContext`, `BaseEntity` |
+| Messaging | `MessageClient`, `AzureMessageClient`, `RabbitMessageClient`, `ConsumerMessage`, `MessageConfiguration`, `AzureServiceBusConfiguration`, `RabbitMqConfiguration`, `ConsumerSubscription` |
+| Secrets | `AzureKeyVault` |
+| Observability | `Activity` |
+| Utilities | `CryptoService` |
+
+Notes:
+
+- `authorize(resource_name, bypass_authorization=False)` returns a FastAPI dependency. `resource_name` is required unless `bypass_authorization=True`; a missing name on a protected endpoint raises `ValueError` at route definition time.
+- `MessageConfiguration.resolve_provider()` auto-selects RabbitMQ for `amqp://`/`amqps://` connection strings and Azure Service Bus otherwise, when neither sub-configuration is set explicitly.
+
+## Configuration
+
+### Application configuration files
+
+`load_configurations(config_dir)` loads `<config_dir>/<APP_ENV>.json` into an in-process dictionary; `APP_ENV` defaults to `dev`. `get_configurations()` returns the loaded dictionary and raises `RuntimeError` if nothing was loaded.
+
+```python
+from blocks_genesis import load_configurations, get_configurations
+
+load_configurations("config")  # loads config/<APP_ENV>.json, APP_ENV defaults to dev
+settings = get_configurations()
 ```
 
-### 5) Install Dependencies (Poetry, optional)
+### Secrets (Azure Key Vault)
 
-```bash
-pip install poetry
-poetry install
-poetry shell
-```
+At startup, the secret loader fetches the fields of the `BlocksSecret` model from Azure Key Vault. Two things must be in place:
 
-## Configuration - Environment Variables
+1. **Vault URL**: the environment variable `KEYVAULT__KEYVAULTURL` must point at the vault (a local `.env` file is honored via `python-dotenv`).
+2. **Credentials**: authentication uses `DefaultAzureCredential` from `azure-identity`. Locally that typically means `az login`; on servers, a managed identity; or the standard `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_CLIENT_SECRET` environment variables for a service principal.
 
-This project supports two operational patterns for configuration bootstrap, and only one should be active for runtime secret ownership at a time.
-
-- Option A: local `.env` centric setup for local development.
-- Option B: cloud secret manager centric setup (Azure Key Vault) for staging/production.
-
-In this repository, `python-dotenv` is used to load local environment values, and secret loading is implemented through Azure Key Vault in the startup lifecycle.
-
-### Option A - Local .env file (Development)
-
-Create a `.env` file in the project root.
+Example `.env` for local development:
 
 ```env
-# Cache
-CACHE_CONNECTION_STRING=redis://localhost:6379
-CacheConnectionString=localhost:6379
-
-# Message Broker
-MESSAGE_BROKER_URL=amqp://<username>:<password>@localhost:5672/
-MessageConnectionString=amqp://<username>:<password>@localhost:5672/
-
-# Observability
-LogConnectionString=mongodb://localhost:27017
-MetricConnectionString=mongodb://localhost:27017
-TraceConnectionString=mongodb://localhost:27017
-LogDatabaseName=blocks_logs
-MetricDatabaseName=blocks_metrics
-TraceDatabaseName=blocks_traces
-ServiceName=blocks_ai_api
-
-# Database
-DATABASE_URL=mongodb://localhost:27017
-DatabaseConnectionString=mongodb://localhost:27017
-RootDatabaseName=blocks_root
 APP_ENV=dev
-
-# Vector Store
-VECTOR_STORE_URL=http://localhost:6333
-VECTOR_STORE_API_KEY=
-
-# Model Config
-MODEL_PROVIDER=openai
-MODEL_NAME=gpt-4o
-MODEL_API_KEY=sk-...
-EMBEDDING_MODEL=text-embedding-3-small
-
-# Security
-SECRET_KEY=change-me
-ENABLE_HTTPS=false
-
-# Azure Key Vault bootstrap (required by current secret loader implementation)
-KEYVAULT__CLIENTID=
-KEYVAULT__CLIENTSECRET=
 KEYVAULT__KEYVAULTURL=https://your-vault-name.vault.azure.net/
-KEYVAULT__TENANTID=
 ```
 
-### Option B - Cloud Secret Manager (Production / Staging)
+Secret names resolved from the vault (the fields of `BlocksSecret`):
 
-The service loads secrets through Azure Key Vault using `KEYVAULT__CLIENTID`, `KEYVAULT__CLIENTSECRET`, `KEYVAULT__KEYVAULTURL`, and `KEYVAULT__TENANTID` to authenticate and retrieve secret values.
-
-Flat secret names used by the application:
-
-```text
-CacheConnectionString
-MessageConnectionString
-LogConnectionString
-MetricConnectionString
-TraceConnectionString
-LogDatabaseName
-MetricDatabaseName
-TraceDatabaseName
-ServiceName
-DatabaseConnectionString
-RootDatabaseName
-```
-
-No code changes are required to switch approaches; switching is environment-driven. In practice for this codebase, ensure local bootstrap variables are present when using Key Vault-backed mode.
-
-### Variable Reference
-
-| Variable | Purpose |
+| Secret | Purpose |
 |---|---|
-| CACHE_CONNECTION_STRING | Redis connection string for response and session caching. |
-| DATABASE_URL | Primary relational or document database connection string. |
-| VECTOR_STORE_URL | Vector database endpoint for embedding storage and retrieval. |
-| VECTOR_STORE_API_KEY | API key for the vector store (if required). |
-| MODEL_PROVIDER | AI model backend: openai, huggingface, ollama, etc. |
-| MODEL_NAME | Model identifier or checkpoint name. |
-| MODEL_API_KEY | API key for the model provider. |
-| EMBEDDING_MODEL | Embedding model name used for vectorization. |
-| MESSAGE_BROKER_URL | Message broker endpoint for async task publishing. |
-| SECRET_KEY | Application secret used for token signing and encryption. |
-| ENABLE_HTTPS | Enables HTTPS/HSTS - true in production, false locally. |
-| APP_ENV | Selects config file under `config/<APP_ENV>.json` (default: `dev`). |
-| KEYVAULT__CLIENTID | Azure AD app/client ID used for Key Vault authentication. |
-| KEYVAULT__CLIENTSECRET | Azure AD app client secret used for Key Vault authentication. |
-| KEYVAULT__KEYVAULTURL | Azure Key Vault URL used to resolve runtime secrets. |
-| KEYVAULT__TENANTID | Azure AD tenant ID used for Key Vault authentication. |
-| CacheConnectionString | Runtime Redis connection string loaded into `BlocksSecret`. |
-| MessageConnectionString | Runtime broker connection string used by Azure Service Bus or RabbitMQ clients. |
-| LogConnectionString | MongoDB connection string used by log exporter. |
-| MetricConnectionString | Reserved metric exporter connection string in `BlocksSecret`. |
-| TraceConnectionString | MongoDB connection string used by trace exporter. |
-| LogDatabaseName | MongoDB database name for logs. |
-| MetricDatabaseName | Reserved metric database name in `BlocksSecret`. |
-| TraceDatabaseName | MongoDB database name for traces. |
-| ServiceName | Service identifier used in telemetry resources and collection naming. |
-| DatabaseConnectionString | Root tenant metadata database connection string. |
-| RootDatabaseName | Root database name containing tenant and authorization metadata. |
+| `CacheConnectionString` | Redis connection string used by the cache provider. |
+| `MessageConnectionString` | Broker connection string used by the Azure Service Bus or RabbitMQ clients. |
+| `LogConnectionString` | MongoDB connection string used by the log exporter. |
+| `MetricConnectionString` | Reserved metric exporter connection string. |
+| `TraceConnectionString` | MongoDB connection string used by the trace exporter. |
+| `LogDatabaseName` | MongoDB database name for logs. |
+| `MetricDatabaseName` | Reserved metric database name. |
+| `TraceDatabaseName` | MongoDB database name for traces. |
+| `ServiceName` | Service identifier; overwritten at load time with the name passed to `configure_lifespan` or `WorkerConsoleApp`. |
+| `DatabaseConnectionString` | Root tenant metadata database connection string. |
+| `RootDatabaseName` | Root database containing tenant and authorization metadata. |
 
-## Running the Project Locally
+## Endpoints and Middleware Added by configure_genesis
 
-### Step 1 - Set environment variables
+`configure_genesis(app, show_docs=False, serve_static=False, static_mount_path="/", static_dir="")` installs, in order: proxy header handling, gzip compression, tenant validation on paths under `/api`, a global exception handler, OpenTelemetry FastAPI instrumentation, and CORS. With `serve_static=True` it also mounts a static directory (default `./static` in the working directory) at `static_mount_path`.
 
-Bash (Linux/macOS):
+It registers these routes on the app:
 
-```bash
-export APP_ENV=dev
-export KEYVAULT__CLIENTID="<client-id>"
-export KEYVAULT__CLIENTSECRET="<client-secret>"
-export KEYVAULT__KEYVAULTURL="https://<vault-name>.vault.azure.net/"
-export KEYVAULT__TENANTID="<tenant-id>"
-```
+| Method | Path | Description |
+|---|---|---|
+| GET | `/ping` | Returns `{"status": "healthy", "message": "pong"}`. |
+| GET | `/swagger/index.html` | Swagger UI when `show_docs=True`, otherwise the string `NOT_ALLOWED`. |
+| GET | `/openapi.json` | OpenAPI schema when `show_docs=True`, otherwise an empty object. |
 
-PowerShell (Windows):
+Tenant validation applies to requests whose path starts with one of the `included_paths` prefixes (default `/api`). The tenant is resolved from the `x-blocks-key` header, the `x-blocks-key` or `tenant_id` query parameter, or the request domain. Requests with an unknown or disabled tenant are rejected, as are requests whose `Origin`/`Referer` domain is not registered for the tenant.
 
-```powershell
-$env:APP_ENV="dev"
-$env:KEYVAULT__CLIENTID="<client-id>"
-$env:KEYVAULT__CLIENTSECRET="<client-secret>"
-$env:KEYVAULT__KEYVAULTURL="https://<vault-name>.vault.azure.net/"
-$env:KEYVAULT__TENANTID="<tenant-id>"
-```
+## Sample Application
 
-### Step 2 - Run services in separate terminals
+The repository root contains a small reference wiring (not part of the published package):
 
-Terminal 1 (API service):
+- `api.py`: a FastAPI service using `configure_lifespan`, `configure_genesis`, `authorize`, and the Azure message client, including a server-sent events endpoint.
+- `worker.py` and `test_consumer.py`: a `WorkerConsoleApp` consuming the message published by `api.py`.
+- `config/dev.json` and `static/`: the configuration file and static directory the sample loads.
+
+Starting the samples requires the backing services from [Requirements](#requirements) plus the Key Vault environment variables, because `configure_lifespan` runs at startup.
+
+## Versioning and Compatibility
+
+- The package is versioned in `pyproject.toml` and published to PyPI as [`blocks-genesis`](https://pypi.org/project/blocks-genesis/).
+- The public API is the set of names exported from the top-level `blocks_genesis` package (its `__all__`). This package is consumed by the SELISE Blocks service repositories, so any change to an exported name, signature, type, or default value is treated as a breaking change and is coordinated across consumers.
+- While the version is below 1.0.0, consumers should pin an exact version; minor releases may still contain breaking changes.
+- Python 3.12 or newer is required.
+
+## Testing
+
+From the repository root:
 
 ```bash
-uvicorn api:app --host 0.0.0.0 --port 8000 --reload
+uv run pytest
 ```
 
-Terminal 2 (Worker service):
+Coverage:
 
 ```bash
-python worker.py
+uv run pytest --cov=blocks_genesis
 ```
-
-Default local URLs:
-
-- API base: `http://localhost:8000/api`
-- Health: `http://localhost:8000/api/health`
-- Ping: `http://localhost:8000/api/ping`
-- Swagger UI: `http://localhost:8000/api/docs` and `http://localhost:8000/api/swagger/index.html`
-- OpenAPI JSON: `http://localhost:8000/api/openapi.json`
-
-### Option 2 - Docker
-
-No Dockerfile is currently committed in this repository. If you add one at the repository root, use:
-
-```bash
-docker build -t seliseblocks-genesis:local .
-docker run --rm -p 8000:8000 \
-	-e APP_ENV=dev \
-	-e KEYVAULT__CLIENTID=<client-id> \
-	-e KEYVAULT__CLIENTSECRET=<client-secret> \
-	-e KEYVAULT__KEYVAULTURL=https://<vault-name>.vault.azure.net/ \
-	-e KEYVAULT__TENANTID=<tenant-id> \
-	seliseblocks-genesis:local
-```
-
-Or with an env file:
-
-```bash
-docker run --rm -p 8000:8000 --env-file .env seliseblocks-genesis:local
-```
-
-## Usage
-
-| Surface | Local URL |
-|---|---|
-| API Base | `http://localhost:8000/api` |
-| Swagger UI | `http://localhost:8000/api/docs` or `http://localhost:8000/api/swagger/index.html` |
-| OpenAPI JSON | `http://localhost:8000/api/openapi.json` |
-| Health Check | `http://localhost:8000/api/health` |
-| Ping | `http://localhost:8000/api/ping` |
-| Model Info | Not exposed in current API |
-
-Refer to the interactive API docs (`/docs`) for full request/response schemas, required fields, and live endpoint testing.
 
 ## Contributing
 
-Contributions are welcome. Please follow these steps:
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before submitting a pull request. Note the branch model described there: work lands on `inception` and is merged into `main` via pull request.
 
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Commit your changes using [Conventional Commits](https://www.conventionalcommits.org/)
-4. Push your branch and open a Pull Request against `dev`
-5. Ensure all tests pass before submitting: `pytest`
+## Security
 
-Please read [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before submitting a PR.
-
----
+See [SECURITY.md](SECURITY.md) for the supported versions and the private disclosure process. Do not report vulnerabilities through public GitHub issues.
 
 ## License
 
 This project is licensed under the terms of the [MIT License](LICENSE).
 
----
-
 ## Maintainers
 
-For questions, issues, or security concerns, please open a [GitHub Issue](https://github.com/SELISEdigitalplatforms/blocks-genesis-py/issues) or review [SECURITY.md](SECURITY.md) for responsible disclosure guidelines.
+For questions or issues, open a [GitHub Issue](https://github.com/SELISEdigitalplatforms/blocks-genesis-py/issues). For security concerns, follow [SECURITY.md](SECURITY.md).
