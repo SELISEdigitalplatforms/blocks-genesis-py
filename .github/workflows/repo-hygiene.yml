@@ -4,6 +4,10 @@ on:
     branches: [inception]
   pull_request:
     branches: [inception]
+
+permissions:
+  contents: read
+
 jobs:
   repo-hygiene:
     runs-on: ubuntu-latest
