@@ -12,6 +12,9 @@ on:
       - sonar
       - main
 
+permissions:
+  contents: read
+
 env:
   RUN_SONARQUBE: "true"
 
