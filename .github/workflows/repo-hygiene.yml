@@ -1,7 +1,5 @@
 name: repo-hygiene
 on:
-  push:
-    branches: [inception]
   pull_request:
     branches: [inception]
 
