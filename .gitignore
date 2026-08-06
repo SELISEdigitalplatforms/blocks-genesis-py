@@ -77,3 +77,18 @@ copilot-instructions.md
 !CONTRIBUTING.md
 !SECURITY.md
 !CODE_OF_CONDUCT.md
+
+# --- open-source baseline: secrets, build output, local agent files ---
+.env.*
+!.env.example
+node_modules/
+obj/
+out/
+coverage/
+QWEN.md
+.clinerules
+.windsurfrules
+results/
+.sonarqube/
+scripts/scan.sh
+*-secrets.json
