@@ -1,11 +1,6 @@
 name: sonarqube analysis
 
 on:
-  push:
-    branches:
-      - dev
-      - sonar
-      - main
   pull_request:
     branches:
       - dev
