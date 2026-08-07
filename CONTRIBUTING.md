@@ -2,6 +2,8 @@
 
 Thank you for your interest in contributing to **blocks-genesis-py**! Your contributions help improve this reusable FastAPI utility package for everyone. Whether you're reporting a bug, suggesting an enhancement, or submitting code changes, we welcome your input.
 
+> **Public API stability warning**: this package is consumed by ten downstream SELISE Blocks repositories. Any change to a name exported from the top-level `blocks_genesis` package (its `__all__`), or to a signature, type, default value, or observable behavior of those exports, is a breaking change for every consumer. Do not make such a change casually; raise it first in an issue so it can be coordinated across all consumers.
+
 ## Table of Contents
 
 - [Code of Conduct](#code-of-conduct)
@@ -49,66 +51,51 @@ If you encounter a bug or have a feature request, please [open an issue](https:/
    git clone https://github.com/SELISEdigitalplatforms/blocks-genesis-py.git
    cd blocks-genesis-py
    ```
-3. **Create a Branch**: Create a new branch for your feature or bugfix (see [Branching Strategy](#branching-strategy)).
+3. **Create a Branch**: Branch from `inception` for your feature or bugfix (see [Branching Strategy](#branching-strategy)).
    ```bash
-   git checkout -b feature/your-feature-name
+   git checkout inception
+   git checkout -b your-branch-name
    ```
 4. **Set up Development Environment**: Follow [Development Setup](#development-setup).
 5. **Make Changes**: Implement your changes following [Coding Guidelines](#coding-guidelines).
 6. **Write/Update Tests**: Ensure new code has tests (see [Testing](#testing)).
 7. **Run Tests**: Verify all tests pass locally.
    ```bash
-   pytest
+   uv run pytest
    ```
 8. **Commit Changes**: Follow [Git Guidelines](#git-guidelines) for commit messages.
 9. **Push to GitHub**: Push your changes to your forked repository.
    ```bash
-   git push origin feature/your-feature-name
+   git push origin your-branch-name
    ```
-10. **Open a Pull Request**: Navigate to the original repository and click "New Pull Request". Link any related issues.
+10. **Open a Pull Request**: Navigate to the original repository and open a pull request targeting `inception`. Link any related issues.
 
 ## Development Setup
 
-### 1. Create Virtual Environment
+The repository is managed with [uv](https://docs.astral.sh/uv/) and pins Python 3.12 (`.python-version`). Dependencies, including the dev group (pytest, pytest-asyncio, pytest-cov, httpx, twine), are locked in `uv.lock`.
+
+### 1. Install Dependencies
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+uv sync
 ```
 
-### 2. Install Dependencies
+This creates `.venv` and installs the exact locked versions.
 
-Using `uv` (recommended):
-```bash
-pip install uv
-uv pip install -e .
-uv pip install pytest
-```
-
-Using `pip`:
-```bash
-pip install -e .
-pip install pytest
-```
-
-### 3. Verify Installation
+### 2. Verify Installation
 
 ```bash
-pytest tests/ -v
+uv run pytest
 ```
 
 ## Branching Strategy
 
-We follow **Git Flow** for branching:
+This repository uses a two-branch model:
 
-- `main`: Production-ready, stable releases.
-- `dev`: Active development branch (default for PRs).
-- `feature/*`: New features branching from `dev` (e.g., `feature/kb-ingestion`).
-- `bugfix/*`: Bug fixes branching from `dev` (e.g., `bugfix/sse-stream-timeout`).
-- `hotfix/*`: Emergency fixes branching from `main` for critical production issues.
-- `docs/*`: Documentation updates (e.g., `docs/api-reference`).
+- `main`: The default branch. Production-ready, stable releases; protected.
+- `inception`: The active development branch. Day-to-day work is committed here.
 
-All PRs should target the `dev` branch unless otherwise agreed.
+Work lands on `inception`, and pull requests are opened from `inception` into `main`. External contributors should fork the repository, branch from `inception`, and target `inception` with their pull requests.
 
 ## Git Guidelines
 
@@ -177,28 +164,27 @@ BREAKING CHANGE: description of breaking change
 ### Examples
 
 ```
-feat(agents): add agent publish to marketplace
+feat(message): add rabbitmq consumer subscription binding via exchange
 
-- Add publish endpoint that changes agent status
-- Include validation for required fields
-- Update agent model with marketplace metadata
+- Add bind_to_queue_via_exchange factory on ConsumerSubscription
+- Support parallel processing flag per subscription
 
 Closes #42
 ```
 
 ```
-fix(kb): resolve sse stream timeout on large file ingestion
+fix(cache): support user= alias in redis connection strings
 
-The vector embedding batch was timing out for files >100MB.
-Split batches into smaller chunks and add exponential backoff.
+redis-py expects the username key, but some connection strings
+use user. Map the alias before building the client config.
 
 Fixes #189
 ```
 
 ```
-docs: update api endpoint documentation
+docs: correct key vault environment variable reference
 
-Update conversation routes with new session response schema.
+Document KEYVAULT__KEYVAULTURL and DefaultAzureCredential usage.
 ```
 
 ## Coding Guidelines
@@ -242,9 +228,9 @@ config/
 
 **For new features:**
 1. Add or extend modules under `blocks_genesis/<domain>/` with clear responsibility boundaries.
-2. Keep request handlers in `api.py` or in reusable helpers under `blocks_genesis/_core/` where appropriate.
-3. Add/extend worker event handling through `worker.py`, `test_consumer.py`, and `blocks_genesis/_message/`.
-4. Add corresponding tests under `tests/` for all behavior changes.
+2. `api.py`, `worker.py`, and `test_consumer.py` at the repository root are reference samples, not part of the published package; update them only to demonstrate new capabilities.
+3. Add corresponding tests under `tests/` for all behavior changes.
+4. Remember the public API stability warning at the top of this document before touching anything exported from `blocks_genesis`.
 
 ### API Conventions
 
@@ -307,43 +293,45 @@ tests/
 
 ### Writing Tests
 
-- **Framework**: Use `pytest` with `pytest-asyncio` for async tests.
+- **Framework**: Use `pytest` with `pytest-asyncio` for async tests (`asyncio_mode = "auto"` is set in `pyproject.toml`, so plain `async def test_*` functions work without a marker).
 - **File Naming**: Test files should be named `test_*.py` or `*_test.py`.
 - **Function Naming**: Test functions should be named `test_*`.
-- **Fixtures**: Use `conftest.py` for shared fixtures.
-- **Mocking**: Use `pytest-mock` for mocking dependencies.
+- **Mocking**: Use `unittest.mock` (`MagicMock`, `AsyncMock`, `patch`) for mocking dependencies, as the existing tests do.
 
 Example:
 
 ```python
-import pytest
 from unittest.mock import AsyncMock
 
-@pytest.mark.asyncio
-async def test_create_agent(mock_service):
-    """Test agent creation endpoint."""
-    request = CreateAgentRequest(name="Test Agent", ...)
-    response = await create_agent(request, service=mock_service)
-    
-    assert response.is_success
-    mock_service.create_agent.assert_called_once()
+from blocks_genesis import CryptoService
+
+
+def test_hash_string_is_deterministic():
+    """The same input and salt must always produce the same digest."""
+    assert CryptoService.hash_string("value", "salt") == CryptoService.hash_string("value", "salt")
+
+
+async def test_async_dependency_called_once():
+    service = AsyncMock()
+    await service.do_work()
+    service.do_work.assert_awaited_once()
 ```
 
 ### Running Tests
 
-Run all tests:
+Run all tests (from the repository root):
 ```bash
-pytest
+uv run pytest
 ```
 
-Run specific test file:
+Run a specific test file:
 ```bash
-pytest tests/test_api.py
+uv run pytest tests/test_api.py
 ```
 
 Run with coverage:
 ```bash
-pytest --cov=blocks_genesis --cov-report=html
+uv run pytest --cov=blocks_genesis --cov-report=html
 ```
 
 ### Test Requirements
@@ -373,7 +361,7 @@ All PRs undergo review to maintain quality:
    - Request re-review after making changes.
 
 4. **Merge Process**: 
-   - Once approved and all checks pass, the PR is merged into `dev`.
+   - Once approved and all checks pass, the PR is merged into `inception`; releases flow from `inception` into `main` via pull request.
    - Use "Squash and merge" for feature PRs to keep history clean.
 
 ## License

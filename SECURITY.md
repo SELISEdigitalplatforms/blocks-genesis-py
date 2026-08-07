@@ -1,5 +1,14 @@
 # Security Policy
 
+## Supported Versions
+
+Only the latest release published to PyPI as [`blocks-genesis`](https://pypi.org/project/blocks-genesis/) receives security fixes.
+
+| Version | Supported |
+|---|---|
+| Latest release (currently 0.3.x) | Yes |
+| Older releases | No, please upgrade |
+
 ## Reporting a Vulnerability
 
 If you believe you have found a security vulnerability, please report it to us as soon as possible. We take all reports seriously and will do our best to address the issue promptly.
@@ -12,6 +21,12 @@ Instead, please follow these steps:
 2. Include a thorough description of the issue, including any relevant information on the environment in which the vulnerability was discovered.
 3. Allow some time for us to review and respond to your report.
 4. We will acknowledge receipt of your report and work with you to understand and validate the issue.
+
+## Response Expectations
+
+- We aim to acknowledge your report within 5 business days.
+- We will keep you informed of our progress while the issue is being investigated and remediated.
+- Please keep the details of any vulnerability confidential until a fix has been released and we have agreed on public disclosure.
 
 ## Responsible Disclosure
 
