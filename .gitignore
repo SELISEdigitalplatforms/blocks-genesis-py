@@ -81,3 +81,6 @@ copilot-instructions.md
 
 # local security scan tooling (contains credentials, never commit)
 scripts/scan.sh
+
+# local virtualenv, never committed
+.venv/
