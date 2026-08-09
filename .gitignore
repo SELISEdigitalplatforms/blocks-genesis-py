@@ -84,3 +84,15 @@ scripts/scan.sh
 
 # local virtualenv, never committed
 .venv/
+
+# --- local AI / scan workspace (do not commit) ---
+results/
+.sonarqube/
+*-secrets.json
+.env.*
+!.env.example
+
+# --- AI agent instruction files (do not commit) ---
+QWEN.md
+.clinerules
+.windsurfrules
