@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives import serialization
 from blocks_genesis._auth.blocks_context import BlocksContext, BlocksContextManager
 from blocks_genesis._cache import CacheClient
 from blocks_genesis._cache.cache_provider import CacheProvider
+from blocks_genesis._delegation.context import AuthClaimsContext
 from blocks_genesis._database.db_context import DbContext
 from blocks_genesis._lmt.activity import Activity
 from blocks_genesis._tenant.tenant import Tenant
@@ -213,6 +214,10 @@ async def authenticate(
         application_domain=application_domain or ""
     )
     BlocksContextManager.set_context(blocks_context)
+
+    # token_version and security_stamp are not on BlocksContext, but a send needs them to build a
+    # delegation grant. Stash the validated claims so it costs no extra I/O later.
+    AuthClaimsContext.set(payload)
 
     # 6. Set activity properties for tracing
     Activity.set_current_property("baggage.UserId", blocks_context.user_id)

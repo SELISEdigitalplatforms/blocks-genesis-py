@@ -11,6 +11,10 @@ from opentelemetry.trace import Status, StatusCode, SpanKind
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from blocks_genesis._auth.blocks_context import BlocksContextManager
 from blocks_genesis._core.secret_loader import get_blocks_secret
+from blocks_genesis._delegation.constants import DELEGATION_GRANT_HEADER
+from blocks_genesis._delegation.context import DelegatedTokenContext
+from blocks_genesis._delegation.grant_store import get_delegation_grant_store
+from blocks_genesis._delegation.token_provider import get_delegated_token_provider
 from blocks_genesis._message.consumer import Consumer
 from blocks_genesis._message.event_message import EventMessage
 from blocks_genesis._message.message_configuration import MessageConfiguration
@@ -131,8 +135,12 @@ class AzureMessageWorker:
         tenant_id = app_props.get("TenantId", "")
         security_context_raw = app_props.get("SecurityContext", "")
         baggage_str = app_props.get("Baggage", "{}")
+        delegation_grant = app_props.get(DELEGATION_GRANT_HEADER) or None
 
         self._restore_security_context(security_context_raw)
+
+        # Deliberately not a span attribute and not in baggage: the grant id is a credential.
+        DelegatedTokenContext.set(delegation_grant)
 
         cancellation_event = asyncio.Event()
         self._active_message_renewals[message_id] = cancellation_event
@@ -184,6 +192,10 @@ class AzureMessageWorker:
                 await receiver.complete_message(message)
                 self._logger.info("Message %s completed", message_id)
 
+                # Order is fixed: business op -> ACK -> DEL. A grant released before the settle
+                # would leave a redelivery unable to mint a token.
+                await self._release_delegation_grant(delegation_grant)
+
         except Exception as ex:
             self._logger.error(
                 "Processing failed for message %s: %s", message_id, ex
@@ -198,6 +210,19 @@ class AzureMessageWorker:
             self._active_message_renewals.pop(message_id, None)
             renewal_task.cancel()
             BlocksContextManager.clear_context()
+            DelegatedTokenContext.clear()
+
+    async def _release_delegation_grant(self, delegation_grant: Optional[str]) -> None:
+        """Remove the grant and its cached token after a successful settle.
+
+        Best effort: if this fails, the absolute TTL still bounds the grant. A message that was
+        abandoned instead keeps its grant, so the redelivery can still mint a token.
+        """
+        if not delegation_grant:
+            return
+
+        get_delegated_token_provider().invalidate(delegation_grant)
+        await get_delegation_grant_store().delete_async(delegation_grant)
 
     def _restore_security_context(self, security_context_raw: str) -> None:
         """Restore the security context from a serialized header value, if present."""

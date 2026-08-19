@@ -17,6 +17,20 @@ from blocks_genesis._utilities.crypto_service import CryptoService
 from blocks_genesis._auth.auth import authorize
 from blocks_genesis._message.message_configuration import AzureServiceBusConfiguration, RabbitMqConfiguration, ConsumerSubscription, MessageConfiguration
 from blocks_genesis._core.azure_key_vault import AzureKeyVault
+from blocks_genesis._delegation import (
+    AuthClaimsContext,
+    DelegatedTokenContext,
+    DelegatedTokenProvider,
+    DelegationGrantFactory,
+    DelegationGrantRecord,
+    DelegationGrantStore,
+    DelegationTokenEndpointResolver,
+    delegated_auth_headers,
+    get_delegated_token_provider,
+    get_delegation_grant_factory,
+    get_delegation_grant_store,
+    get_endpoint_resolver,
+)
 
 __all__ = [
     "BlocksContext",
@@ -46,5 +60,17 @@ __all__ = [
     "AzureServiceBusConfiguration",
     "authorize",
     "fast_api_app",
-    "AzureKeyVault"
+    "AzureKeyVault",
+    "AuthClaimsContext",
+    "DelegatedTokenContext",
+    "DelegatedTokenProvider",
+    "DelegationGrantFactory",
+    "DelegationGrantRecord",
+    "DelegationGrantStore",
+    "DelegationTokenEndpointResolver",
+    "delegated_auth_headers",
+    "get_delegated_token_provider",
+    "get_delegation_grant_factory",
+    "get_delegation_grant_store",
+    "get_endpoint_resolver"
 ]
