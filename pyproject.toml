@@ -1,6 +1,6 @@
 [project]
 name = "blocks-genesis"
-version = "0.3.1"
+version = "0.3.2"
 description = "Reusable FastAPI utilities like middlewares, singletons, and more for Selise Blocks and Selise Genesis projects."
 readme = "README.md"
 license = {text = "MIT"}

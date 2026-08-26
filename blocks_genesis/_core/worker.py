@@ -6,6 +6,7 @@ from typing import Any, Dict, Type, Union
 
 from blocks_genesis._cache.cache_provider import CacheProvider
 from blocks_genesis._cache.redis_client import RedisClient
+from blocks_genesis._core.configuration import get_configurations
 from blocks_genesis._core.secret_loader import SecretLoader, get_blocks_secret
 from blocks_genesis._database.db_context import DbContext
 from blocks_genesis._database.mongo_context import MongoDbContextProvider
@@ -16,6 +17,7 @@ from blocks_genesis._message.rabbit_mq.rabbit_message_client import RabbitMessag
 from blocks_genesis._message.rabbit_mq.rabbit_message_worker import RabbitMessageWorker
 from blocks_genesis._message.event_registry import EventRegistry
 from blocks_genesis._message.message_configuration import MessageConfiguration
+from blocks_genesis._subscription.client import SubscriptionClient
 from blocks_genesis._lmt.log_config import configure_logger
 from blocks_genesis._lmt.mongo_log_exporter import MongoHandler
 from blocks_genesis._lmt.tracing import configure_tracing
@@ -93,6 +95,14 @@ class WorkerConsoleApp:
                 self.message_worker.initialize()
                 self.logger.info("Azure Message Worker initialized and ready")
 
+            try:
+                utilities_base_url = get_configurations().get("utilities_base_url")
+            except Exception:
+                utilities_base_url = None
+            if utilities_base_url:
+                SubscriptionClient.initialize(utilities_base_url)
+                self.logger.info("SubscriptionClient initialized")
+
             yield self.message_worker
 
         except Exception as ex:
@@ -113,6 +123,11 @@ class WorkerConsoleApp:
             self.logger.info("Stopping Message Worker...")
             await self.message_worker.stop()
             self.logger.info("Message Worker stopped.")
+
+        try:
+            await SubscriptionClient.get_instance().close()
+        except RuntimeError:
+            pass
 
         if hasattr(MongoHandler, '_mongo_logger') and MongoHandler._mongo_logger:
             self.logger.info("Stopping Mongo log exporter...")

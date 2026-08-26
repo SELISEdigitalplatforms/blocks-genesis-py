@@ -46,8 +46,9 @@ class BlocksContext(BaseModel):
     original_tenant_id: str = ""
     application_domain: str = ""  # Domain extracted from Origin/Referer headers
     impersonated: bool = False
+    # Set by subscription_usage_snapshot(). None = not fetched or failed -- fail open.
+    usage_snapshot: Optional[List[Any]] = None
 
-    
     class Config:
         arbitrary_types_allowed = True
 
