@@ -16,7 +16,7 @@ from blocks_genesis._cache import CacheClient
 from blocks_genesis._cache.cache_provider import CacheProvider
 from blocks_genesis._database.db_context import DbContext
 from blocks_genesis._lmt.activity import Activity
-from blocks_genesis._subscription.client import SubscriptionClient
+from blocks_genesis._subscription.usage_service import SubscriptionUsageService
 from blocks_genesis._tenant.tenant import Tenant
 from blocks_genesis._tenant.tenant_service import TenantService
 
@@ -710,8 +710,8 @@ def subscription_usage_snapshot(bypass_authorization: bool = False):
     authorize(bypass_authorization=True) -- use standalone, with no authorize()
     alongside it.
 
-    Never raises on a missing token or a Utilities error -- usage_snapshot is just
-    left None (fail open).
+    Reads usage straight from Mongo (no Utilities HTTP call). Never raises on a missing
+    organization or a DB error -- usage_snapshot is just left None (fail open).
     """
     async def dependency(request: Request) -> Optional[BlocksContext]:
         if bypass_authorization:
@@ -722,18 +722,17 @@ def subscription_usage_snapshot(bypass_authorization: bool = False):
         if not context:
             raise HTTPException(status_code=401, detail="Missing context")
 
-        token = context.oauth_token
-        if not token:
+        if not context.organization_id:
             return context
 
         try:
-            context.usage_snapshot = await SubscriptionClient.get_instance().get_usage_current(
-                oauth_token=token,
+            context.usage_snapshot = await SubscriptionUsageService.get_usage_current(
                 tenant_id=context.tenant_id,
+                organization_id=context.organization_id,
             )
         except Exception:
             _logger.exception(
-                "subscription_usage_snapshot: Utilities call failed; leaving usage_snapshot=None."
+                "subscription_usage_snapshot: usage lookup failed; leaving usage_snapshot=None."
             )
             context.usage_snapshot = None
 

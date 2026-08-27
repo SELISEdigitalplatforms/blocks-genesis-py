@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 from blocks_genesis._cache.cache_provider import CacheProvider
 from blocks_genesis._cache.redis_client import RedisClient
-from blocks_genesis._core.configuration import get_configurations
 from blocks_genesis._core.secret_loader import SecretLoader, get_blocks_secret
 from blocks_genesis._database.db_context import DbContext
 from blocks_genesis._database.mongo_context import MongoDbContextProvider
@@ -19,7 +18,6 @@ from blocks_genesis._message.azure.azure_message_client import AzureMessageClien
 from blocks_genesis._message.rabbit_mq.rabbit_message_client import RabbitMessageClient
 from blocks_genesis._message.message_configuration import MessageConfiguration
 from blocks_genesis._middlewares.global_exception_middleware import GlobalExceptionHandlerMiddleware
-from blocks_genesis._subscription.client import SubscriptionClient
 from blocks_genesis._middlewares.tenant_middleware import TenantValidationMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from blocks_genesis._tenant.tenant_service import initialize_tenant_service
@@ -55,13 +53,6 @@ async def configure_lifespan(name: str, message_config: MessageConfiguration):
         if message_config.azure_service_bus_configuration is not None:
             AzureMessageClient.initialize(message_config)
 
-    try:
-        utilities_base_url = get_configurations().get("utilities_base_url")
-    except Exception:
-        utilities_base_url = None
-    if utilities_base_url:
-        SubscriptionClient.initialize(utilities_base_url)
-
 def custom_generate_unique_id(route: APIRoute):
     """
     Custom function to generate unique IDs for routes.
@@ -89,10 +80,6 @@ async def close_lifespan():
         pass
     try:
         await AzureMessageClient.get_instance().close()
-    except RuntimeError:
-        pass
-    try:
-        await SubscriptionClient.get_instance().close()
     except RuntimeError:
         pass
     # Shutdown logic

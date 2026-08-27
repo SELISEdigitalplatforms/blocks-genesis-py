@@ -17,8 +17,8 @@ from blocks_genesis._utilities.crypto_service import CryptoService
 from blocks_genesis._auth.auth import authorize, subscription_usage_snapshot
 from blocks_genesis._message.message_configuration import AzureServiceBusConfiguration, RabbitMqConfiguration, ConsumerSubscription, MessageConfiguration
 from blocks_genesis._core.azure_key_vault import AzureKeyVault
-from blocks_genesis._subscription.client import SubscriptionClient
-from blocks_genesis._subscription.models import EntitlementsSnapshot, Entitlement, UsageResult
+from blocks_genesis._subscription.usage_service import SubscriptionUsageService
+from blocks_genesis._subscription.models import UsageResult
 
 __all__ = [
     "BlocksContext",
@@ -50,8 +50,6 @@ __all__ = [
     "subscription_usage_snapshot",
     "fast_api_app",
     "AzureKeyVault",
-    "SubscriptionClient",
-    "EntitlementsSnapshot",
-    "Entitlement",
+    "SubscriptionUsageService",
     "UsageResult",
 ]
