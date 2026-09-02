@@ -1,7 +1,7 @@
 """Stored ints on SubscriptionUsageCurrent.SubscriptionStatus.
 
-The writer lives outside this workspace, so this mapping is recorded rather than derived --
-correct it here if a row ever contradicts it.
+The writer lives outside this workspace, so this mapping is recorded, not derived. Correct it
+here if a row contradicts it -- blocks-utilities' own enum disagrees (Active = 3 there).
 """
 from enum import IntEnum
 

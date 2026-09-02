@@ -194,3 +194,56 @@ async def test_db_error_returns_none(provider):
     with patch(REPO + "get_current_usage_docs", side_effect=ConnectionError("down")):
         result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
     assert result is None
+
+
+# ---------------- fractional / mixed numeric types ----------------
+
+
+def test_number_reads_int64_double_and_decimal128_alike():
+    from bson import Decimal128, Int64
+
+    from blocks_genesis._subscription.usage_service import _number
+
+    assert _number(Int64(800)) == 800.0
+    assert _number(41.2) == 41.2
+    assert _number(Decimal128("41.2")) == 41.2
+    assert _number(None) == 0.0
+    assert _number("not-a-number") == 0.0
+
+
+def test_to_result_keeps_fractional_quantities_intact():
+    from blocks_genesis._subscription.usage_service import _to_result
+
+    result = _to_result({
+        "MeterKey": "ai-credits",
+        "Used": 800.75,
+        "Included": 1000,
+        "Remaining": 199.25,
+        "Overage": 0.5,
+        "OverageAllowed": False,
+    })
+    assert result.used == 800.75
+    assert result.remaining == 199.25
+    assert result.overage == 0.5
+    assert result.allowed is True
+
+
+def test_to_result_int64_document_still_works():
+    # The shape in Mongo today: Used/Remaining/Overage as $numberLong.
+    from bson import Int64
+
+    from blocks_genesis._subscription.usage_service import _to_result
+
+    result = _to_result({
+        "MeterKey": "ai-credits",
+        "Used": Int64(800),
+        "Included": Int64(500),
+        "Remaining": Int64(0),
+        "Overage": Int64(300),
+        "OverageAllowed": False,
+    })
+    assert result.used == 800.0
+    assert result.remaining == 0.0
+    assert result.overage == 300.0
+    # 800 used against 500 included with no overage allowed -- exhausted.
+    assert result.allowed is False

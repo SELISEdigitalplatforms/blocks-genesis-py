@@ -1,6 +1,4 @@
-"""Direct Mongo access to SubscriptionUsageCurrent -- a pre-computed read model, one row per
-meter. No period or allowance math here; the writer already did it.
-"""
+"""Reads SubscriptionUsageCurrent -- a pre-computed read model, one row per meter."""
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
