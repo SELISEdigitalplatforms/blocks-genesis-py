@@ -20,6 +20,7 @@ from blocks_genesis._message.message_configuration import MessageConfiguration
 from blocks_genesis._middlewares.global_exception_middleware import GlobalExceptionHandlerMiddleware
 from blocks_genesis._middlewares.tenant_middleware import TenantValidationMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+from blocks_genesis._delegation.endpoint_resolver import get_endpoint_resolver
 from blocks_genesis._tenant.tenant_service import initialize_tenant_service
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
@@ -44,7 +45,12 @@ async def configure_lifespan(name: str, message_config: MessageConfiguration):
     CacheProvider.set_client(RedisClient())
     await initialize_tenant_service()
     DbContext.set_provider(MongoDbContextProvider())
-    
+
+    # Fails fast when neither BLOCKS_IAM_BASE_URL nor BLOCKS_IAM_TOKEN_ENDPOINT is configured.
+    # The token endpoint is never guessed, so an unconfigured deployment must not start.
+    get_endpoint_resolver().ensure_configured()
+    logger.info("Delegated access configured; the IAM token endpoint resolves by discovery per tenant")
+
     if message_config is not None:
         message_config.connection = message_config.connection or get_blocks_secret().MessageConnectionString
         message_config.resolve_provider()

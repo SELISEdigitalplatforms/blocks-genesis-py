@@ -19,6 +19,7 @@ from blocks_genesis._message.message_configuration import MessageConfiguration
 from blocks_genesis._lmt.log_config import configure_logger
 from blocks_genesis._lmt.mongo_log_exporter import MongoHandler
 from blocks_genesis._lmt.tracing import configure_tracing
+from blocks_genesis._delegation.endpoint_resolver import get_endpoint_resolver
 from blocks_genesis._tenant.tenant_service import initialize_tenant_service
 
 
@@ -65,6 +66,11 @@ class WorkerConsoleApp:
             await initialize_tenant_service()
             DbContext.set_provider(MongoDbContextProvider())
             self.logger.info("Cache, TenantService, and Mongo Context initialized")
+
+            # Fails fast when neither BLOCKS_IAM_BASE_URL nor BLOCKS_IAM_TOKEN_ENDPOINT is
+            # configured. A worker that cannot redeem a grant should not start.
+            get_endpoint_resolver().ensure_configured()
+            self.logger.info("Delegated access configured")
 
             for event_type, handler in self.register_consumer.items():
                 if isinstance(event_type, str) and event_type and (callable(handler) or hasattr(handler, "handle")):

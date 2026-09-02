@@ -13,6 +13,7 @@
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Quickstart](#quickstart)
+- [Delegated Access](#delegated-access)
 - [Public API](#public-api)
 - [Configuration](#configuration)
 - [Endpoints and Middleware Added by configure_genesis](#endpoints-and-middleware-added-by-configure_genesis)
@@ -171,6 +172,102 @@ async def publish_demo():
 
 `AzureMessageClient.get_instance()` (or `RabbitMessageClient.get_instance()`) is available after `configure_lifespan` has initialized the client for the configured broker.
 
+## Delegated Access
+
+A worker has identity but no credential — the security context arrives over the bus with
+`oauth_token` blanked. Delegated access closes that gap without putting a token in the message.
+
+At send time, while a validated user token is still in scope, the message client writes a short
+**delegation grant** to Redis and puts its opaque id in the `DelegationGrant` header. The worker
+redeems that id at IAM (RFC 8693 token exchange) for a normal, short-lived access token carrying the
+original user's tenant, organization, roles and permissions. A long job can redeem as often as it
+needs; nothing rotates, so retries are safe.
+
+The wire format is identical to `blocks-genesis-net` — grant id shape, signature input, Redis keys,
+JSON field names, header names — and a shared conformance vector is asserted in both SDKs.
+
+### Sending is automatic
+
+Any `send_to_consumer_async` / `send_to_mass_consumer_async` made inside an authenticated request
+creates the grant for you. With no authenticated user, no grant is created and the header is omitted:
+it fails closed.
+
+```python
+await MessageClient.get_instance().send_to_consumer_async(
+    ConsumerMessage(
+        consumer_name="email_queue",
+        payload=payload,
+        payload_type="EmailRequested",
+        delegation_ttl_seconds=6 * 3600,   # optional; defaults to 2 days
+    )
+)
+```
+
+### Using the token is explicit, per call
+
+```python
+from blocks_genesis import delegated_auth_headers
+
+async def handle(message):
+    # Adds Authorization: Bearer <token> and x-blocks-key. Merges with what you pass in;
+    # an Authorization header you already set always wins.
+    headers = await delegated_auth_headers()
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, headers=headers) as response:
+            ...
+```
+
+Nothing is attached implicitly, by design: a worker calling a third party must not hand it a Blocks
+credential. Call without these headers and no credential is sent.
+
+The token is cached per grant, with an `asyncio.Lock` per grant giving single-flight — fifty
+concurrent callers cost one exchange, and a long job costs one exchange per token lifetime rather
+than one per call.
+
+**Outside a worker** there is no grant, and `delegated_auth_headers()` returns your headers
+unchanged. Delegation solves the worker problem specifically.
+
+> **Tracing caveat.** This SDK has no shared outbound HTTP helper, so a call you make with these
+> headers is not automatically traced and does not propagate `traceparent` to the callee. (The token
+> exchange itself does both — it emits a `blocks.delegation.token_exchange` span.) The .NET SDK gets
+> this from `IHttpService`; there is no Python equivalent yet.
+
+### Required configuration
+
+The IAM token endpoint is resolved by OIDC discovery and **never hardcoded**, because the API route
+prefix can rewrite it. Set at least one of these, or **startup fails**:
+
+| Setting | Meaning |
+|---|---|
+| `BLOCKS_IAM_BASE_URL` | Preferred. Used for `GET {base}/{tenant_id}/.well-known/openid-configuration`. |
+| `BLOCKS_IAM_TOKEN_ENDPOINT` | Fallback: the **complete** endpoint URL, e.g. `http://blocks-iam:8080/api/oidc/token`. Not a base, not a template. |
+
+Both resolve in this order: **environment variable → `FrontendRuntime` section → top-level key.**
+`FrontendRuntime` is checked first because that is where Blocks services keep runtime settings, so
+this is the normal place to put them in your config file:
+
+```json
+{
+  "FrontendRuntime": {
+    "BLOCKS_IAM_BASE_URL": "http://blocks-iam:8080"
+  }
+}
+```
+
+A bare top-level `"BLOCKS_IAM_BASE_URL"` also works. **Point them at IAM's internal address, never
+the public host.**
+
+### Operational notes
+
+- The grant id is a bearer credential. It is never logged or set as a span attribute — keep it that
+  way, and audit dead-letter tooling that captures message headers.
+- Restrict Redis writes to `delegation:*` to the delegation component; write access there is
+  impersonation authority.
+- The exchange signature has a ±60s clock window, so **NTP must be correct** on worker and IAM nodes.
+- A grant is deleted only after a successful run (business op → ACK → DEL). A failed run keeps its
+  grant so a redelivery still works; the absolute TTL is the backstop.
+
 ## Public API
 
 Everything below is importable from the top-level `blocks_genesis` package.
@@ -186,6 +283,7 @@ Everything below is importable from the top-level `blocks_genesis` package.
 | Messaging | `MessageClient`, `AzureMessageClient`, `RabbitMessageClient`, `ConsumerMessage`, `MessageConfiguration`, `AzureServiceBusConfiguration`, `RabbitMqConfiguration`, `ConsumerSubscription` |
 | Secrets | `AzureKeyVault` |
 | Observability | `Activity` |
+| Delegated access | `delegated_auth_headers`, `DelegatedTokenProvider`, `DelegatedTokenContext`, `AuthClaimsContext`, `DelegationGrantStore`, `DelegationGrantFactory`, `DelegationGrantRecord`, `DelegationTokenEndpointResolver`, `get_delegated_token_provider`, `get_delegation_grant_store`, `get_delegation_grant_factory`, `get_endpoint_resolver` |
 | Utilities | `CryptoService` |
 
 Notes:

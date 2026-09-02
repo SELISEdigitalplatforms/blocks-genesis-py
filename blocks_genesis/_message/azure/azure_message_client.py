@@ -13,6 +13,8 @@ from azure.servicebus import ServiceBusMessage
 
 from blocks_genesis._auth.blocks_context import BlocksContextManager
 from blocks_genesis._core.secret_loader import get_blocks_secret
+from blocks_genesis._delegation.constants import DELEGATION_GRANT_HEADER
+from blocks_genesis._delegation.grant_factory import get_delegation_grant_factory
 from blocks_genesis._lmt.activity import Activity
 from blocks_genesis._message.consumer_message import ConsumerMessage
 from blocks_genesis._message.event_message import EventMessage
@@ -97,18 +99,29 @@ class AzureMessageClient(MessageClient):
                 type=consumer_message.payload_type
             )
 
+            application_properties = {
+                "TenantId": security_context.tenant_id if security_context else None,
+                "TraceId": activity.get_trace_id(),
+                "SpanId": activity.get_span_id(),
+                "SecurityContext": consumer_message.context or json.dumps(
+                    security_context.__dict__ if security_context else {}, 
+                    cls=DateTimeEncoder
+                ),
+                "Baggage": json.dumps(activity.get_all_root_attributes())
+            }
+
+            # Written while a validated user token is still in scope. SecurityContext above is
+            # context and tracing only; this grant is what carries authority. No user, no grant,
+            # no header.
+            delegation_grant = await get_delegation_grant_factory().create_for_send_async(
+                consumer_message.delegation_ttl_seconds
+            )
+            if delegation_grant:
+                application_properties[DELEGATION_GRANT_HEADER] = delegation_grant
+
             sb_message = ServiceBusMessage(
                 body=json.dumps(message_body.__dict__),
-                application_properties={
-                    "TenantId": security_context.tenant_id if security_context else None,
-                    "TraceId": activity.get_trace_id(),
-                    "SpanId": activity.get_span_id(),
-                    "SecurityContext": consumer_message.context or json.dumps(
-                        security_context.__dict__ if security_context else {}, 
-                        cls=DateTimeEncoder
-                    ),
-                    "Baggage": json.dumps(activity.get_all_root_attributes())
-                }
+                application_properties=application_properties
             )
 
             try:

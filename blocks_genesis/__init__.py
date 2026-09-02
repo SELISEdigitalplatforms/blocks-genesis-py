@@ -20,6 +20,20 @@ from blocks_genesis._core.azure_key_vault import AzureKeyVault
 from blocks_genesis._subscription.usage_service import SubscriptionUsageService
 from blocks_genesis._subscription.models import UsageResult
 from blocks_genesis._subscription.enums import SubscriptionStatus
+from blocks_genesis._delegation import (
+    AuthClaimsContext,
+    DelegatedTokenContext,
+    DelegatedTokenProvider,
+    DelegationGrantFactory,
+    DelegationGrantRecord,
+    DelegationGrantStore,
+    DelegationTokenEndpointResolver,
+    delegated_auth_headers,
+    get_delegated_token_provider,
+    get_delegation_grant_factory,
+    get_delegation_grant_store,
+    get_endpoint_resolver,
+)
 
 __all__ = [
     "BlocksContext",
@@ -54,4 +68,16 @@ __all__ = [
     "SubscriptionUsageService",
     "UsageResult",
     "SubscriptionStatus",
+    "AuthClaimsContext",
+    "DelegatedTokenContext",
+    "DelegatedTokenProvider",
+    "DelegationGrantFactory",
+    "DelegationGrantRecord",
+    "DelegationGrantStore",
+    "DelegationTokenEndpointResolver",
+    "delegated_auth_headers",
+    "get_delegated_token_provider",
+    "get_delegation_grant_factory",
+    "get_delegation_grant_store",
+    "get_endpoint_resolver"
 ]

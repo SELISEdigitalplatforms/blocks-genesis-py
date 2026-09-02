@@ -10,6 +10,10 @@ from opentelemetry.trace import SpanKind, StatusCode
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from blocks_genesis._auth.blocks_context import BlocksContextManager
+from blocks_genesis._delegation.constants import DELEGATION_GRANT_HEADER
+from blocks_genesis._delegation.context import DelegatedTokenContext
+from blocks_genesis._delegation.grant_store import get_delegation_grant_store
+from blocks_genesis._delegation.token_provider import get_delegated_token_provider
 from blocks_genesis._message.consumer import Consumer
 from blocks_genesis._message.event_message import EventMessage
 from blocks_genesis._message.message_configuration import ConsumerSubscription, MessageConfiguration
@@ -120,7 +124,9 @@ class RabbitMessageWorker:
         self, message: AbstractIncomingMessage, subscription: ConsumerSubscription
     ) -> None:
         """Handles a single incoming message: context → tracing → dispatch → always ACK."""
-        tenant_id, security_context_raw, baggage_str, context = self._restore_message_context(message)
+        tenant_id, security_context_raw, baggage_str, context, delegation_grant = (
+            self._restore_message_context(message)
+        )
 
         with self._tracer.start_as_current_span(
             "process.messaging.rabbitmq",
@@ -149,11 +155,13 @@ class RabbitMessageWorker:
                 body_str,
             )
 
+            processed_successfully = False
             try:
                 event = EventMessage(**json.loads(body_str))
                 await self._consumer.process_message(event.type, event.body)
                 span.set_status(StatusCode.OK, "Message processed successfully")
                 logger.info("Message processed successfully.")
+                processed_successfully = True
             except Exception as ex:
                 logger.exception("Error processing RabbitMQ message.")
                 span.set_status(StatusCode.ERROR, str(ex))
@@ -161,12 +169,20 @@ class RabbitMessageWorker:
             finally:
                 # Always ACK — mirrors .NET: BasicAckAsync in finally block
                 await message.ack()
+
+                # Order is fixed: business op -> ACK -> DEL. A grant released before the ACK would
+                # leave a redelivery unable to mint a token, and one released after a failure would
+                # break a retry, so only a successful run releases it.
+                if processed_successfully:
+                    await self._release_delegation_grant(delegation_grant)
+
                 BlocksContextManager.clear_context()
+                DelegatedTokenContext.clear()
 
     def _restore_message_context(self, message: AbstractIncomingMessage):
         """Decode tracing/security headers and restore the security + trace context.
 
-        Returns (tenant_id, security_context_raw, baggage_str, trace_context).
+        Returns (tenant_id, security_context_raw, baggage_str, trace_context, delegation_grant).
         """
         headers = message.headers or {}
 
@@ -180,6 +196,7 @@ class RabbitMessageWorker:
         tenant_id = _decode(headers.get("TenantId", ""))
         security_context_raw = _decode(headers.get("SecurityContext", ""))
         baggage_str = _decode(headers.get("Baggage", "{}"))
+        delegation_grant = _decode(headers.get(DELEGATION_GRANT_HEADER, "")) or None
 
         # Restore security context (mirrors .NET: BlocksContext.SetContext)
         if security_context_raw:
@@ -199,7 +216,21 @@ class RabbitMessageWorker:
             except Exception:
                 logger.warning("Could not extract trace context from headers.", exc_info=True)
 
-        return tenant_id, security_context_raw, baggage_str, context
+        # Deliberately not a span attribute and not in baggage: the grant id is a credential.
+        DelegatedTokenContext.set(delegation_grant)
+
+        return tenant_id, security_context_raw, baggage_str, context, delegation_grant
+
+    async def _release_delegation_grant(self, delegation_grant: Optional[str]) -> None:
+        """Remove the grant and its cached token after a successful settle.
+
+        Best effort: if this fails, the absolute TTL still bounds the grant.
+        """
+        if not delegation_grant:
+            return
+
+        get_delegated_token_provider().invalidate(delegation_grant)
+        await get_delegation_grant_store().delete_async(delegation_grant)
 
     async def stop(self) -> None:
         """Signals the worker to stop and closes the RabbitMQ connection."""
