@@ -17,6 +17,7 @@ from blocks_genesis._delegation.constants import DELEGATION_GRANT_HEADER
 from blocks_genesis._delegation.grant_factory import get_delegation_grant_factory
 from blocks_genesis._lmt.activity import Activity
 from blocks_genesis._message.consumer_message import ConsumerMessage
+from blocks_genesis._auth.blocks_context import TRANSIENT_CONTEXT_FIELDS
 from blocks_genesis._message.event_message import EventMessage
 from blocks_genesis._message.message_client import MessageClient
 from blocks_genesis._message.message_configuration import MessageConfiguration
@@ -28,6 +29,16 @@ class DateTimeEncoder(json.JSONEncoder):
         if isinstance(obj, datetime):
             return obj.isoformat()
         return super().default(obj)
+
+def _wire_context(security_context: Any) -> dict:
+    """The security context minus its request-scoped fields."""
+    if security_context is None:
+        return {}
+    data = dict(getattr(security_context, "__dict__", None) or {})
+    for field in TRANSIENT_CONTEXT_FIELDS:
+        data.pop(field, None)
+    return data
+
 
 class AzureMessageClient(MessageClient):
     _instance: Optional['AzureMessageClient'] = None
@@ -104,8 +115,7 @@ class AzureMessageClient(MessageClient):
                 "TraceId": activity.get_trace_id(),
                 "SpanId": activity.get_span_id(),
                 "SecurityContext": consumer_message.context or json.dumps(
-                    security_context.__dict__ if security_context else {}, 
-                    cls=DateTimeEncoder
+                    _wire_context(security_context), cls=DateTimeEncoder
                 ),
                 "Baggage": json.dumps(activity.get_all_root_attributes())
             }

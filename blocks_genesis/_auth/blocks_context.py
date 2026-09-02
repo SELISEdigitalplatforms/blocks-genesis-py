@@ -5,6 +5,11 @@ from pydantic import BaseModel, Field
 import threading
 from urllib.parse import urlparse
 
+# Request-scoped fields that must never travel in a queue message's SecurityContext: they
+# are stale by the time a consumer reads them, and not all of them are JSON-serializable.
+TRANSIENT_CONTEXT_FIELDS = {"usage_snapshot"}
+
+
 class BlocksContext(BaseModel):
     # JWT Standard Claims
     ISSUER_CLAIM: ClassVar[str] = "iss"
@@ -46,8 +51,9 @@ class BlocksContext(BaseModel):
     original_tenant_id: str = ""
     application_domain: str = ""  # Domain extracted from Origin/Referer headers
     impersonated: bool = False
+    # Set by subscription_usage_snapshot(). None = not fetched or failed -- fail open.
+    usage_snapshot: Optional[List[Any]] = None
 
-    
     class Config:
         arbitrary_types_allowed = True
 
