@@ -19,6 +19,7 @@ from blocks_genesis._message.message_configuration import AzureServiceBusConfigu
 from blocks_genesis._core.azure_key_vault import AzureKeyVault
 from blocks_genesis._subscription.usage_service import SubscriptionUsageService
 from blocks_genesis._subscription.models import UsageResult
+from blocks_genesis._subscription.enums import SubscriptionStatus
 
 __all__ = [
     "BlocksContext",
@@ -52,4 +53,5 @@ __all__ = [
     "AzureKeyVault",
     "SubscriptionUsageService",
     "UsageResult",
+    "SubscriptionStatus",
 ]
