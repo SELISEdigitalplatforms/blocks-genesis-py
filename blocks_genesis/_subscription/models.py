@@ -2,7 +2,7 @@ from pydantic import BaseModel
 
 
 class UsageResult(BaseModel):
-    """Quantities are floats: the meter may store them as Int64, Double or Decimal128."""
+    """Quantities are floats -- the meter stores them as Decimal128 and they may be fractional."""
 
     allowed: bool
     meter_key: str

@@ -11,7 +11,8 @@ logger = logging.getLogger(__name__)
 
 
 def _number(value: Any) -> float:
-    """Int64, Double or Decimal128 as a float. Nothing truncates; unreadable reads as 0."""
+    """A stored quantity as a float. Decimal128 (what the meter writes now) and any plain
+    number both work; nothing truncates, and an unreadable value reads as 0."""
     if value is None:
         return 0.0
     to_decimal = getattr(value, "to_decimal", None)
