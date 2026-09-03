@@ -25,6 +25,7 @@ dependencies = [
     "azure-servicebus>=7.14.2",
     "aio-pika>=9.0.0",
     "cors>=1.0.1",
+    "tzdata>=2024.1",
 ]
 
 requires-python = ">=3.12"
