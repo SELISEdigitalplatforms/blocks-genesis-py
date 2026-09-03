@@ -51,7 +51,7 @@ def test_for_meter_finds_the_row():
     SubscriptionUsageContext.set([_row("messages"), _row("ai-credits", remaining=42.0)])
     found = SubscriptionUsageContext.for_meter("ai-credits")
     assert found is not None
-    assert found.remaining == 42.0
+    assert found.remaining == pytest.approx(42.0)
 
 
 def test_for_meter_is_none_for_an_absent_meter_and_an_absent_snapshot():
@@ -66,10 +66,12 @@ async def test_a_child_task_sees_what_was_set_before_it_started():
     SubscriptionUsageContext.set([_row("messages")])
 
     async def read():
+        await asyncio.sleep(0)
         row = SubscriptionUsageContext.for_meter("messages")
         return row.meter_key if row else None
 
-    assert await asyncio.create_task(read()) == "messages"
+    task = asyncio.create_task(read())
+    assert await task == "messages"
 
 
 @pytest.mark.asyncio
@@ -79,8 +81,10 @@ async def test_a_child_task_setting_it_does_not_leak_back_to_the_parent():
     SubscriptionUsageContext.set([_row("messages")])
 
     async def overwrite():
+        await asyncio.sleep(0)
         SubscriptionUsageContext.set([_row("tool-calls")])
 
-    await asyncio.create_task(overwrite())
+    task = asyncio.create_task(overwrite())
+    await task
     current = SubscriptionUsageContext.current()
     assert [r.meter_key for r in current] == ["messages"]

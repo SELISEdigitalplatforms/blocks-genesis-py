@@ -3,6 +3,7 @@
 Only auth and the Mongo collection are substituted. Shows what mocked units cannot: that a
 ContextVar set inside a dependency reaches the route handler.
 """
+import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
@@ -49,6 +50,7 @@ class _FakeProvider:
         self.requested = []
 
     async def get_collection(self, name, tenant_id=None):
+        await asyncio.sleep(0)
         self.requested.append((name, tenant_id))
         return self.collection
 
