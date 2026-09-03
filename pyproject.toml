@@ -1,6 +1,6 @@
 [project]
 name = "blocks-genesis"
-version = "0.3.1"
+version = "0.3.2"
 description = "Reusable FastAPI utilities like middlewares, singletons, and more for Selise Blocks and Selise Genesis projects."
 readme = "README.md"
 license = {text = "MIT"}
@@ -25,6 +25,7 @@ dependencies = [
     "azure-servicebus>=7.14.2",
     "aio-pika>=9.0.0",
     "cors>=1.0.1",
+    "tzdata>=2024.1",
 ]
 
 requires-python = ">=3.12"

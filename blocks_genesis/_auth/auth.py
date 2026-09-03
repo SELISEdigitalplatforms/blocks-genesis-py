@@ -14,8 +14,11 @@ from cryptography.hazmat.primitives import serialization
 from blocks_genesis._auth.blocks_context import BlocksContext, BlocksContextManager
 from blocks_genesis._cache import CacheClient
 from blocks_genesis._cache.cache_provider import CacheProvider
+from blocks_genesis._delegation.context import AuthClaimsContext
 from blocks_genesis._database.db_context import DbContext
 from blocks_genesis._lmt.activity import Activity
+from blocks_genesis._subscription.context import SubscriptionUsageContext
+from blocks_genesis._subscription.usage_service import SubscriptionUsageService
 from blocks_genesis._tenant.tenant import Tenant
 from blocks_genesis._tenant.tenant_service import TenantService
 
@@ -213,6 +216,10 @@ async def authenticate(
         application_domain=application_domain or ""
     )
     BlocksContextManager.set_context(blocks_context)
+
+    # token_version and security_stamp are not on BlocksContext, but a send needs them to build a
+    # delegation grant. Stash the validated claims so it costs no extra I/O later.
+    AuthClaimsContext.set(payload)
 
     # 6. Set activity properties for tracing
     Activity.set_current_property("baggage.UserId", blocks_context.user_id)
@@ -690,7 +697,53 @@ def authorize(resource_name: str = None, bypass_authorization: bool = False):
         
         if not has_access:
             raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
+
+        return context
+
+    return Depends(dependency)
+
+
+# ============================================================================
+# SUBSCRIPTION USAGE SNAPSHOT
+# ============================================================================
+
+def subscription_usage_snapshot(bypass_authorization: bool = False):
+    """
+    Resolves SubscriptionUsageContext, the same way authorize() resolves identity.
+
+    bypass_authorization=False (default): reuse context set by a prior authorize()
+    call. bypass_authorization=True: authenticate on its own first, via
+    authorize(bypass_authorization=True) -- use standalone, with no authorize()
+    alongside it.
+
+    Reads usage straight from Mongo (no Utilities HTTP call). Read it back with
+    `SubscriptionUsageContext.current()`. Never raises on a missing organization or a DB
+    error -- the snapshot is just left None (fail open).
+    """
+    async def dependency(request: Request) -> Optional[BlocksContext]:
+        if bypass_authorization:
+            context = await authorize(bypass_authorization=True).dependency(request)
+        else:
+            context = BlocksContextManager.get_context()
+
+        if not context:
+            raise HTTPException(status_code=401, detail="Missing context")
+
+        if not context.organization_id:
+            SubscriptionUsageContext.set(None)
+            return context
+
+        try:
+            SubscriptionUsageContext.set(
+                await SubscriptionUsageService.get_usage_current(
+                    tenant_id=context.tenant_id,
+                    organization_id=context.organization_id,
+                )
+            )
+        except Exception:
+            _logger.exception("subscription_usage_snapshot: usage lookup failed; leaving it None.")
+            SubscriptionUsageContext.set(None)
+
         return context
 
     return Depends(dependency)

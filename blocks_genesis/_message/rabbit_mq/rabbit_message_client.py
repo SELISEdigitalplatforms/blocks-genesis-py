@@ -10,6 +10,8 @@ import aio_pika
 from pydantic import BaseModel
 
 from blocks_genesis._auth.blocks_context import BlocksContextManager
+from blocks_genesis._delegation.constants import DELEGATION_GRANT_HEADER
+from blocks_genesis._delegation.grant_factory import get_delegation_grant_factory
 from blocks_genesis._lmt.activity import Activity
 from blocks_genesis._message.consumer_message import ConsumerMessage
 from blocks_genesis._message.event_message import EventMessage
@@ -122,6 +124,15 @@ class RabbitMessageClient(MessageClient):
                 ),
                 "Baggage": json.dumps(activity.get_all_root_attributes()),
             }
+
+            # Written while a validated user token is still in scope. SecurityContext above is
+            # context and tracing only; this grant is what carries authority. No user, no grant,
+            # no header.
+            delegation_grant = await get_delegation_grant_factory().create_for_send_async(
+                consumer_message.delegation_ttl_seconds
+            )
+            if delegation_grant:
+                headers[DELEGATION_GRANT_HEADER] = delegation_grant
 
             properties: dict = {
                 "delivery_mode": aio_pika.DeliveryMode.PERSISTENT,

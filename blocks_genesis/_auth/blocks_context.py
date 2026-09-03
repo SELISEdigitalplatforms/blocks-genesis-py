@@ -47,7 +47,6 @@ class BlocksContext(BaseModel):
     application_domain: str = ""  # Domain extracted from Origin/Referer headers
     impersonated: bool = False
 
-    
     class Config:
         arbitrary_types_allowed = True
 
