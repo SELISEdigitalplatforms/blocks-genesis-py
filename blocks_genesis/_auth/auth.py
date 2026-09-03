@@ -17,6 +17,7 @@ from blocks_genesis._cache.cache_provider import CacheProvider
 from blocks_genesis._delegation.context import AuthClaimsContext
 from blocks_genesis._database.db_context import DbContext
 from blocks_genesis._lmt.activity import Activity
+from blocks_genesis._subscription.context import SubscriptionUsageContext
 from blocks_genesis._subscription.usage_service import SubscriptionUsageService
 from blocks_genesis._tenant.tenant import Tenant
 from blocks_genesis._tenant.tenant_service import TenantService
@@ -708,15 +709,16 @@ def authorize(resource_name: str = None, bypass_authorization: bool = False):
 
 def subscription_usage_snapshot(bypass_authorization: bool = False):
     """
-    Resolves context.usage_snapshot, the same way authorize() resolves identity.
+    Resolves SubscriptionUsageContext, the same way authorize() resolves identity.
 
     bypass_authorization=False (default): reuse context set by a prior authorize()
     call. bypass_authorization=True: authenticate on its own first, via
     authorize(bypass_authorization=True) -- use standalone, with no authorize()
     alongside it.
 
-    Reads usage straight from Mongo (no Utilities HTTP call). Never raises on a missing
-    organization or a DB error -- usage_snapshot is just left None (fail open).
+    Reads usage straight from Mongo (no Utilities HTTP call). Read it back with
+    `SubscriptionUsageContext.current()`. Never raises on a missing organization or a DB
+    error -- the snapshot is just left None (fail open).
     """
     async def dependency(request: Request) -> Optional[BlocksContext]:
         if bypass_authorization:
@@ -728,18 +730,19 @@ def subscription_usage_snapshot(bypass_authorization: bool = False):
             raise HTTPException(status_code=401, detail="Missing context")
 
         if not context.organization_id:
+            SubscriptionUsageContext.set(None)
             return context
 
         try:
-            context.usage_snapshot = await SubscriptionUsageService.get_usage_current(
-                tenant_id=context.tenant_id,
-                organization_id=context.organization_id,
+            SubscriptionUsageContext.set(
+                await SubscriptionUsageService.get_usage_current(
+                    tenant_id=context.tenant_id,
+                    organization_id=context.organization_id,
+                )
             )
         except Exception:
-            _logger.exception(
-                "subscription_usage_snapshot: usage lookup failed; leaving usage_snapshot=None."
-            )
-            context.usage_snapshot = None
+            _logger.exception("subscription_usage_snapshot: usage lookup failed; leaving it None.")
+            SubscriptionUsageContext.set(None)
 
         return context
 

@@ -17,7 +17,6 @@ from blocks_genesis._delegation.constants import DELEGATION_GRANT_HEADER
 from blocks_genesis._delegation.grant_factory import get_delegation_grant_factory
 from blocks_genesis._lmt.activity import Activity
 from blocks_genesis._message.consumer_message import ConsumerMessage
-from blocks_genesis._auth.blocks_context import TRANSIENT_CONTEXT_FIELDS
 from blocks_genesis._message.event_message import EventMessage
 from blocks_genesis._message.message_client import MessageClient
 from blocks_genesis._message.message_configuration import MessageConfiguration
@@ -31,13 +30,10 @@ class DateTimeEncoder(json.JSONEncoder):
         return super().default(obj)
 
 def _wire_context(security_context: Any) -> dict:
-    """The security context minus its request-scoped fields."""
+    """The security context as it travels in a message header."""
     if security_context is None:
         return {}
-    data = dict(getattr(security_context, "__dict__", None) or {})
-    for field in TRANSIENT_CONTEXT_FIELDS:
-        data.pop(field, None)
-    return data
+    return dict(getattr(security_context, "__dict__", None) or {})
 
 
 class AzureMessageClient(MessageClient):

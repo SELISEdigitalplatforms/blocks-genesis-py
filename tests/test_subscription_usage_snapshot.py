@@ -1,7 +1,8 @@
 """blocks_genesis._auth.auth.subscription_usage_snapshot.
 
-Resolves a usage snapshot onto BlocksContext, standalone or composed after authorize().
-Unlike test_authorize_bypass, these tests actually invoke the inner dependency(request).
+Resolves a usage snapshot into SubscriptionUsageContext, standalone or composed after
+authorize(). Unlike test_authorize_bypass, these tests actually invoke the inner
+dependency(request).
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,8 +12,17 @@ from fastapi import HTTPException
 
 from blocks_genesis._auth import auth
 from blocks_genesis._auth.blocks_context import BlocksContext
+from blocks_genesis._subscription.context import SubscriptionUsageContext
 
 AUTH = "blocks_genesis._auth.auth."
+
+
+@pytest.fixture(autouse=True)
+def _clear_usage_context():
+    """These tests set the ambient snapshot; leaving it set would leak into other files."""
+    SubscriptionUsageContext.clear()
+    yield
+    SubscriptionUsageContext.clear()
 
 
 def _dep(**kwargs):
@@ -57,7 +67,7 @@ async def test_reuses_existing_context_without_reauthenticating():
 
     mock_authenticate.assert_not_awaited()
     assert result is ctx
-    assert result.usage_snapshot == [{"meterKey": "messages", "allowed": True}]
+    assert SubscriptionUsageContext.current() == [{"meterKey": "messages", "allowed": True}]
     mock_service.get_usage_current.assert_awaited_once_with(tenant_id="t1", organization_id="org-1")
 
 
@@ -112,7 +122,7 @@ async def test_missing_organization_id_leaves_snapshot_none_without_querying():
 
     mock_service.get_usage_current.assert_not_called()
     assert result is ctx
-    assert result.usage_snapshot is None
+    assert SubscriptionUsageContext.current() is None
 
 
 @pytest.mark.asyncio
@@ -145,4 +155,4 @@ async def test_db_error_leaves_snapshot_none_and_does_not_raise():
 
         result = await _dep(bypass_authorization=False)(_request())
 
-    assert result.usage_snapshot is None
+    assert SubscriptionUsageContext.current() is None
