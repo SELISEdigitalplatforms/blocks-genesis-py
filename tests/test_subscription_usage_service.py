@@ -175,9 +175,9 @@ async def test_expired_period_row_is_excluded(provider):
 
 @pytest.mark.asyncio
 async def test_multiple_meters_all_returned(provider):
-    provider.collection.docs = [_usage_doc(meter_key="tkn"), _usage_doc(meter_key="messages")]
+    provider.collection.docs = [_usage_doc(meter_key="tkn"), _usage_doc(meter_key="second-meter")]
     result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
-    assert {r.meter_key for r in result} == {"tkn", "messages"}
+    assert {r.meter_key for r in result} == {"tkn", "second-meter"}
 
 
 @pytest.mark.asyncio
@@ -271,3 +271,40 @@ def test_to_result_int64_document_still_works():
     assert result.overage == pytest.approx(300.0)
     # 800 used against 500 included with no overage allowed -- exhausted.
     assert result.allowed is False
+
+
+# ---------------- QuantityScale ----------------
+
+
+def test_to_result_reads_the_quantity_scale():
+    from blocks_genesis._subscription.usage_service import _to_result
+
+    # 0 is whole numbers only; 2 allows 550.55.
+    assert _to_result({"MeterKey": "m", "QuantityScale": 0}).quantity_scale == 0
+    assert _to_result({"MeterKey": "m", "QuantityScale": 2}).quantity_scale == 2
+
+
+def test_is_fraction_allowed_is_derived_from_the_scale():
+    from blocks_genesis._subscription.usage_service import _to_result
+
+    assert _to_result({"MeterKey": "m", "QuantityScale": 0}).is_fraction_allowed is False
+    assert _to_result({"MeterKey": "m", "QuantityScale": 1}).is_fraction_allowed is True
+    assert _to_result({"MeterKey": "m", "QuantityScale": 3}).is_fraction_allowed is True
+
+
+def test_an_absent_or_unreadable_scale_is_whole_numbers_only():
+    from blocks_genesis._subscription.usage_service import _to_result
+
+    for doc in ({"MeterKey": "m"}, {"MeterKey": "m", "QuantityScale": None},
+                {"MeterKey": "m", "QuantityScale": "abc"}):
+        result = _to_result(doc)
+        assert result.quantity_scale == 0
+        assert result.is_fraction_allowed is False
+
+
+def test_the_scale_is_clamped_to_the_api_maximum():
+    from blocks_genesis._subscription.usage_service import MAX_QUANTITY_SCALE, _to_result
+
+    assert MAX_QUANTITY_SCALE == 6
+    assert _to_result({"MeterKey": "m", "QuantityScale": 9}).quantity_scale == 6
+    assert _to_result({"MeterKey": "m", "QuantityScale": -2}).quantity_scale == 0

@@ -12,7 +12,6 @@ from pydantic import BaseModel
 from blocks_genesis._auth.blocks_context import BlocksContextManager
 from blocks_genesis._delegation.constants import DELEGATION_GRANT_HEADER
 from blocks_genesis._delegation.grant_factory import get_delegation_grant_factory
-from blocks_genesis._auth.blocks_context import TRANSIENT_CONTEXT_FIELDS
 from blocks_genesis._lmt.activity import Activity
 from blocks_genesis._message.consumer_message import ConsumerMessage
 from blocks_genesis._message.event_message import EventMessage
@@ -121,9 +120,7 @@ class RabbitMessageClient(MessageClient):
                 "TraceId": Activity.get_trace_id(),
                 "SpanId": Activity.get_span_id(),
                 "SecurityContext": consumer_message.context or json.dumps(
-                    security_context.model_dump(mode="json", exclude=TRANSIENT_CONTEXT_FIELDS)
-                    if security_context
-                    else {}
+                    security_context.model_dump(mode="json") if security_context else {}
                 ),
                 "Baggage": json.dumps(activity.get_all_root_attributes()),
             }

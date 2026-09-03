@@ -25,10 +25,22 @@ def _number(value: Any) -> float:
         return 0.0
 
 
+MAX_QUANTITY_SCALE = 6
+
+
+def _scale(value: Any) -> int:
+    """The meter's decimal places, clamped to what the API accepts. Unreadable reads as 0."""
+    try:
+        return max(0, min(MAX_QUANTITY_SCALE, int(value)))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _to_result(doc: Dict[str, Any]) -> UsageResult:
     used = _number(doc.get("Used"))
     included = _number(doc.get("Included"))
     overage_allowed = bool(doc.get("OverageAllowed", True))
+    scale = _scale(doc.get("QuantityScale"))
     return UsageResult(
         allowed=used <= included or overage_allowed,
         meter_key=doc.get("MeterKey") or "",
@@ -36,6 +48,8 @@ def _to_result(doc: Dict[str, Any]) -> UsageResult:
         remaining=_number(doc.get("Remaining")),
         overage=_number(doc.get("Overage")),
         replayed=False,
+        quantity_scale=scale,
+        is_fraction_allowed=scale > 0,
     )
 
 
