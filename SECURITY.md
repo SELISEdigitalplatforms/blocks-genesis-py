@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-Only the latest release published to PyPI as [`blocks-genesis`](https://pypi.org/project/blocks-genesis/) receives security fixes.
+Only the latest release published to PyPI as [`seliseblocks-genesis`](https://pypi.org/project/seliseblocks-genesis/) receives security fixes.
 
 | Version | Supported |
 |---|---|
