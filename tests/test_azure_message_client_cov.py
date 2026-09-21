@@ -158,17 +158,40 @@ async def test_get_sender_creates():
 
 
 @pytest.mark.asyncio
-async def test_get_sender_double_check():
+async def test_get_sender_creates_a_queue_sender_for_a_configured_queue():
     c = _client()
-    lock = c._sender_locks['z']
-    await lock.acquire()
-    task = asyncio.ensure_future(c._get_sender('z'))
-    await asyncio.sleep(0)
-    c._senders['z'] = 'preexisting'
-    lock.release()
-    result = await task
-    assert result == 'preexisting'
+    c._message_config.azure_service_bus_configuration.queues = ['q']
+    c._client.get_queue_sender.return_value = 'queuesender'
+    assert await c._get_sender('q') == 'queuesender'
+    c._client.get_queue_sender.assert_called_once_with(queue_name='q')
     c._client.get_topic_sender.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_replace_sender_swaps_in_a_fresh_one_and_closes_the_old():
+    """A failed send leaves the handler torn down, so the sender is rebuilt rather
+    than handed to the next caller with a dead link."""
+    c = _client()
+    dead = MagicMock()
+    dead.close = AsyncMock()
+    c._senders['q'] = dead
+    c._message_config.azure_service_bus_configuration.queues = ['q']
+    c._client.get_queue_sender.return_value = 'fresh'
+
+    assert await c._replace_sender('q') == 'fresh'
+    assert c._senders['q'] == 'fresh'
+    dead.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_replace_sender_survives_a_close_that_throws():
+    c = _client()
+    dead = MagicMock()
+    dead.close = AsyncMock(side_effect=RuntimeError('already gone'))
+    c._senders['t'] = dead
+    c._client.get_topic_sender.return_value = 'fresh'
+
+    assert await c._replace_sender('t') == 'fresh'
 
 
 # ---------------- _serialize_payload ----------------
@@ -195,6 +218,92 @@ def test_serialize_unsupported():
 
 
 # ---------------- _send_to_azure_bus_async ----------------
+
+@pytest.mark.asyncio
+async def test_concurrent_sends_never_overlap_inside_one_sender():
+    """The sender is shared by every caller, and an async ServiceBusSender cannot be
+    driven by two coroutines at once: its `_open` sets `_running` only after several
+    awaits, so a second caller walks in and both rebuild the link, nulling `_handler`
+    and `_session` under each other. That surfaces as a bare AttributeError from inside
+    the SDK, so the sends have to be serialised per destination."""
+    c = _client()
+    state = {'inflight': 0, 'overlaps': 0, 'sends': 0}
+
+    async def send_messages(_message):
+        state['inflight'] += 1
+        if state['inflight'] > 1:
+            state['overlaps'] += 1
+        await asyncio.sleep(0)  # the yield point where a real reconnect interleaves
+        state['inflight'] -= 1
+        state['sends'] += 1
+
+    sender = MagicMock()
+    sender.send_messages = send_messages
+    c._senders['q'] = sender
+
+    with ExitStack() as stack:
+        _send_patches(stack, _Ctx())
+        await asyncio.gather(*(
+            c._send_to_azure_bus_async(
+                ConsumerMessage(consumer_name='q', payload={}, payload_type='T'),
+                is_topic=False,
+            )
+            for _ in range(12)
+        ))
+
+    assert state['sends'] == 12
+    assert state['overlaps'] == 0, 'two coroutines were inside the same sender'
+
+
+@pytest.mark.asyncio
+async def test_sends_to_different_destinations_do_not_queue_behind_each_other():
+    c = _client()
+    assert c._sender_locks['q1'] is not c._sender_locks['q2']
+
+
+@pytest.mark.asyncio
+async def test_a_failed_send_rebuilds_the_sender_and_retries_once():
+    """The SDK tears the handler down on failure, so the cached sender is left with a
+    dead link. Retrying on the same object just fails again."""
+    c = _client()
+    c._message_config.azure_service_bus_configuration.queues = ['q']
+    dead = MagicMock()
+    dead.close = AsyncMock()
+    dead.send_messages = AsyncMock(
+        side_effect=AttributeError("'NoneType' object has no attribute 'create_sender_link'")
+    )
+    fresh = MagicMock()
+    fresh.send_messages = AsyncMock()
+    c._senders['q'] = dead
+    c._client.get_queue_sender.return_value = fresh
+
+    cm = ConsumerMessage(consumer_name='q', payload={}, payload_type='T')
+    with ExitStack() as stack:
+        _send_patches(stack, _Ctx())
+        assert await c._send_to_azure_bus_async(cm, is_topic=False) is True
+
+    dead.close.assert_awaited_once()
+    fresh.send_messages.assert_awaited_once()
+    assert c._senders['q'] is fresh
+
+
+@pytest.mark.asyncio
+async def test_a_send_that_fails_twice_still_raises():
+    """One rebuild, not a loop -- the caller's own retry policy owns what happens next."""
+    c = _client()
+    sender = MagicMock()
+    sender.close = AsyncMock()
+    sender.send_messages = AsyncMock(side_effect=RuntimeError('still down'))
+    c._senders['q'] = sender
+    c._client.get_topic_sender.return_value = sender
+
+    cm = ConsumerMessage(consumer_name='q', payload={}, payload_type='T')
+    with ExitStack() as stack:
+        _send_patches(stack, _Ctx())
+        with pytest.raises(RuntimeError):
+            await c._send_to_azure_bus_async(cm, is_topic=False)
+    assert sender.send_messages.await_count == 2
+
 
 @pytest.mark.asyncio
 async def test_send_queue_context_string():
