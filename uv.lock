@@ -1743,7 +1743,7 @@ wheels = [
 
 [[package]]
 name = "seliseblocks-genesis"
-version = "0.3.4"
+version = "0.3.5"
 source = { editable = "." }
 dependencies = [
     { name = "aio-pika" },
