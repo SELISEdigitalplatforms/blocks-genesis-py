@@ -27,7 +27,13 @@ class BlocksContext(BaseModel):
     DISPLAY_NAME_CLAIM: ClassVar[str] = "name"
     PHONE_NUMBER_CLAIM: ClassVar[str] = "phone"
     IMPERSONATED_CLAIM: ClassVar[str] = "impersonated"
+    IMPERSONATION_SESSION_ID_CLAIM: ClassVar[str] = "impersonation_session_id"
     ORIGINAL_TENANT_ID_CLAIM: ClassVar[str] = "original_tenant_id"
+    CLIENT_ID_CLAIM: ClassVar[str] = "client_id"
+
+    # The IdP session this token was minted under. Standard OIDC claim. Empty for tokens
+    # with no user session, such as client_credentials and token exchange.
+    SESSION_ID_CLAIM: ClassVar[str] = "sid"
     
     # Properties
     tenant_id: str = ""
@@ -46,6 +52,9 @@ class BlocksContext(BaseModel):
     original_tenant_id: str = ""
     application_domain: str = ""  # Domain extracted from Origin/Referer headers
     impersonated: bool = False
+    impersonation_session_id: str = ""
+    client_id: str = ""
+    session_id: str = ""
 
     class Config:
         arbitrary_types_allowed = True
@@ -54,9 +63,171 @@ class BlocksContext(BaseModel):
 _context_var: ContextVar[Optional[BlocksContext]] = ContextVar('blocks_context', default=None)
 _test_mode = threading.local()
 
+# Widest organization scope there is, not a narrow one: consumers read it as
+# tenant-wide. Narrow it deliberately for any provider that should not have that.
+DEFAULT_ORGANIZATION = "default"
+
+
 class BlocksContextManager:
     """Manages BlocksContext instances and provides utility methods"""
-    
+
+    # Claims an external identity provider must never be able to set. Stripped before
+    # anything downstream sees the token, then written back from what we decided --
+    # otherwise a provider names its own tenant, roles or permissions simply by minting
+    # those claims into its token.
+    RESERVED_CLAIMS: ClassVar[tuple] = (
+        BlocksContext.TENANT_ID_CLAIM,
+        BlocksContext.ORIGINAL_TENANT_ID_CLAIM,
+        BlocksContext.USER_ID_CLAIM,
+        BlocksContext.USER_NAME_CLAIM,
+        BlocksContext.DISPLAY_NAME_CLAIM,
+        BlocksContext.EMAIL_CLAIM,
+        BlocksContext.PERMISSION_CLAIM,
+        BlocksContext.ORGANIZATION_ID_CLAIM,
+        BlocksContext.IMPERSONATED_CLAIM,
+        BlocksContext.IMPERSONATION_SESSION_ID_CLAIM,
+        BlocksContext.CLIENT_ID_CLAIM,
+        BlocksContext.ROLES_CLAIM,
+    )
+
+    # Wire name -> context field, for the payload a message or gRPC hop carries. The
+    # names are .NET's, from BlocksContext.CreateSanitizedForTransport: a worker rebuilds
+    # the context from this payload and never sees the JWT, so a field left out here is
+    # lost to every async consumer.
+    _TRANSPORT_FIELDS: ClassVar[tuple] = (
+        ("TenantId", "tenant_id"),
+        ("Roles", "roles"),
+        ("UserId", "user_id"),
+        ("IsAuthenticated", "is_authenticated"),
+        ("RequestUri", "request_uri"),
+        ("OrganizationId", "organization_id"),
+        ("ExpireOn", "expire_on"),
+        ("Email", "email"),
+        ("Permissions", "permissions"),
+        ("UserName", "user_name"),
+        ("PhoneNumber", "phone_number"),
+        ("DisplayName", "display_name"),
+        ("OauthToken", "oauth_token"),
+        ("OriginalTenantId", "original_tenant_id"),
+        ("ApplicationDomain", "application_domain"),
+        ("Impersonated", "impersonated"),
+        ("ClientId", "client_id"),
+        ("SessionId", "session_id"),
+    )
+
+    @staticmethod
+    def create_sanitized_for_transport(context: Optional[BlocksContext]) -> Dict[str, Any]:
+        """The context as it travels on a message, matching .NET key for key.
+
+        Email and phone number are masked, and the token never travels at all.
+        ImpersonationSessionId is deliberately left out, exactly as .NET leaves it out.
+        """
+        if context is None:
+            return {}
+
+        email = context.email or ""
+        masked_email = "***" if "@" not in email else f"***@{email.split('@')[1]}"
+
+        phone = context.phone_number or ""
+        masked_phone = "***" if not phone or phone == "***" else f"***{phone[-4:]}"
+
+        expire_on = context.expire_on.isoformat() if context.expire_on else None
+
+        return {
+            "TenantId": context.tenant_id or "",
+            "Roles": list(context.roles or []),
+            "UserId": context.user_id or "",
+            "IsAuthenticated": context.is_authenticated,
+            "RequestUri": context.request_uri or "",
+            "OrganizationId": context.organization_id or "",
+            "ExpireOn": expire_on,
+            "Email": masked_email,
+            "Permissions": list(context.permissions or []),
+            "UserName": context.user_name or "",
+            "PhoneNumber": masked_phone,
+            "DisplayName": context.display_name or "",
+            "OauthToken": "",
+            "OriginalTenantId": context.original_tenant_id or context.tenant_id or "",
+            "ApplicationDomain": context.application_domain or "",
+            "Impersonated": context.impersonated,
+            "ClientId": context.client_id or "",
+            "SessionId": context.session_id or "",
+        }
+
+    @staticmethod
+    def from_transport(payload: Optional[Dict[str, Any]]) -> Optional[BlocksContext]:
+        """Rebuild a context from a message payload.
+
+        Reads .NET's names, and snake_case too so messages queued before this shipped
+        still land. Unknown keys are ignored rather than raising -- a payload from a
+        newer sender must not cost a worker its whole context.
+        """
+        if not payload:
+            return None
+
+        values = {}
+        for wire_name, field in BlocksContextManager._TRANSPORT_FIELDS:
+            if wire_name in payload:
+                values[field] = payload[wire_name]
+            elif field in payload:
+                values[field] = payload[field]
+
+        return BlocksContext(**{k: v for k, v in values.items() if v is not None})
+
+    @staticmethod
+    def strip_reserved_claims(claims: Dict[str, Any]) -> Dict[str, Any]:
+        """Drop every claim an external provider must not be able to set."""
+        reserved = BlocksContextManager.RESERVED_CLAIMS
+        return {k: v for k, v in claims.items() if k not in reserved}
+
+    @staticmethod
+    def create_third_party_context(
+        tenant_id: str,
+        subject: str,
+        organization_id: str = DEFAULT_ORGANIZATION,
+        *,
+        roles: Optional[List[str]] = None,
+        email: str = "",
+        user_name: str = "",
+        display_name: str = "",
+        application_domain: str = "",
+        request_uri: str = "",
+        expire_on: Optional[datetime] = None,
+    ) -> BlocksContext:
+        """Build the context for a validated external token.
+
+        Takes no claims dictionary on purpose. Every value here is either resolved from
+        the tenant record or from the provider's configured claim mapping, so nothing the
+        external provider wrote can reach a consumer.
+
+        Unlike .NET, a subject that did not resolve raises instead of producing a bare
+        `_external` principal shared by every broken mapping.
+        """
+        if not tenant_id or not tenant_id.strip():
+            raise ValueError("A third-party context needs the tenant from the tenant record.")
+        if not subject or not subject.strip():
+            raise ValueError(
+                "The UserId mapping resolved to nothing, so this token identifies nobody."
+            )
+
+        return BlocksContext(
+            tenant_id=tenant_id,
+            original_tenant_id=tenant_id,
+            user_id=f"{subject}_external",
+            roles=roles or [],
+            permissions=[],
+            organization_id=organization_id or DEFAULT_ORGANIZATION,
+            is_authenticated=True,
+            email=email,
+            user_name=user_name,
+            display_name=display_name,
+            phone_number="",
+            oauth_token="",
+            request_uri=request_uri,
+            application_domain=application_domain,
+            expire_on=expire_on,
+        )
+
     @staticmethod
     def get_test_mode() -> bool:
         """Get test mode status (thread-safe)"""
@@ -164,7 +335,10 @@ class BlocksContextManager:
             oauth_token=get_claim_value(BlocksContext.TOKEN_CLAIM),
             original_tenant_id=original_tenant_id,
             application_domain=application_domain,
-            impersonated=get_claim_value(BlocksContext.IMPERSONATED_CLAIM, False)
+            impersonated=get_claim_value(BlocksContext.IMPERSONATED_CLAIM, False),
+            impersonation_session_id=get_claim_value(BlocksContext.IMPERSONATION_SESSION_ID_CLAIM),
+            client_id=get_claim_value(BlocksContext.CLIENT_ID_CLAIM),
+            session_id=get_claim_value(BlocksContext.SESSION_ID_CLAIM)
         )
     
     @staticmethod
@@ -184,7 +358,10 @@ class BlocksContextManager:
         oauth_token: Optional[str] = None,
         original_tenant_id: Optional[str] = None,
         application_domain: str = "",
-        impersonated: bool = False
+        impersonated: bool = False,
+        impersonation_session_id: Optional[str] = None,
+        client_id: Optional[str] = None,
+        session_id: Optional[str] = None
     ) -> BlocksContext:
         """Create BlocksContext from individual parameters"""
         return BlocksContext(
@@ -203,7 +380,10 @@ class BlocksContextManager:
             oauth_token=oauth_token or "",
             original_tenant_id=original_tenant_id or "",
             application_domain=application_domain,
-            impersonated=impersonated
+            impersonated=impersonated,
+            impersonation_session_id=impersonation_session_id or "",
+            client_id=client_id or "",
+            session_id=session_id or ""
         )
     
     @staticmethod

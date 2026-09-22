@@ -29,13 +29,6 @@ class DateTimeEncoder(json.JSONEncoder):
             return obj.isoformat()
         return super().default(obj)
 
-def _wire_context(security_context: Any) -> dict:
-    """The security context as it travels in a message header."""
-    if security_context is None:
-        return {}
-    return dict(getattr(security_context, "__dict__", None) or {})
-
-
 class AzureMessageClient(MessageClient):
     _instance: Optional['AzureMessageClient'] = None
     _singleton_lock = threading.Lock()
@@ -129,7 +122,8 @@ class AzureMessageClient(MessageClient):
                 "TraceId": activity.get_trace_id(),
                 "SpanId": activity.get_span_id(),
                 "SecurityContext": consumer_message.context or json.dumps(
-                    _wire_context(security_context), cls=DateTimeEncoder
+                    BlocksContextManager.create_sanitized_for_transport(security_context),
+                    cls=DateTimeEncoder,
                 ),
                 "Baggage": json.dumps(activity.get_all_root_attributes())
             }

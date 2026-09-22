@@ -2,12 +2,15 @@
 
 It holds non-serializable rows and is stale by the time a consumer reads it. Now that it lives
 in its own holder rather than on BlocksContext, it cannot reach the wire -- these hold that line.
+
+Both transports build the payload with `create_sanitized_for_transport`, so there is one
+place for this to go wrong rather than two.
 """
 import json
 
 from blocks_genesis import UsageResult
-from blocks_genesis._auth.blocks_context import BlocksContext
-from blocks_genesis._message.azure.azure_message_client import DateTimeEncoder, _wire_context
+from blocks_genesis._auth.blocks_context import BlocksContext, BlocksContextManager
+from blocks_genesis._message.azure.azure_message_client import DateTimeEncoder
 from blocks_genesis._subscription.context import SubscriptionUsageContext
 
 
@@ -30,17 +33,17 @@ def test_blocks_context_has_no_usage_snapshot_field():
     assert "usage_snapshot" not in BlocksContext.model_fields
 
 
-def test_azure_wire_context_serializes_while_a_snapshot_is_live():
+def test_wire_context_serializes_while_a_snapshot_is_live():
     SubscriptionUsageContext.set(_snapshot())
     try:
-        wire = _wire_context(_context())
+        wire = BlocksContextManager.create_sanitized_for_transport(_context())
         assert "usage_snapshot" not in wire
-        assert json.loads(json.dumps(wire, cls=DateTimeEncoder))["tenant_id"] == "t1"
+        assert json.loads(json.dumps(wire, cls=DateTimeEncoder))["TenantId"] == "t1"
     finally:
         SubscriptionUsageContext.clear()
 
 
-def test_rabbit_model_dump_serializes_while_a_snapshot_is_live():
+def test_model_dump_serializes_while_a_snapshot_is_live():
     SubscriptionUsageContext.set(_snapshot())
     try:
         dumped = _context().model_dump(mode="json")
@@ -50,11 +53,11 @@ def test_rabbit_model_dump_serializes_while_a_snapshot_is_live():
         SubscriptionUsageContext.clear()
 
 
-def test_azure_wire_context_of_none_is_empty():
-    assert _wire_context(None) == {}
+def test_wire_context_of_none_is_empty():
+    assert BlocksContextManager.create_sanitized_for_transport(None) == {}
 
 
-def test_azure_wire_context_keeps_identity_fields():
-    wire = _wire_context(_context())
-    assert wire["tenant_id"] == "t1"
-    assert wire["organization_id"] == "default"
+def test_wire_context_keeps_identity_fields():
+    wire = BlocksContextManager.create_sanitized_for_transport(_context())
+    assert wire["TenantId"] == "t1"
+    assert wire["OrganizationId"] == "default"

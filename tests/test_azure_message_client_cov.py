@@ -60,6 +60,9 @@ def _send_patches(stack, ctx):
     MAct.return_value.__enter__.return_value = act
     MBCM = stack.enter_context(patch(AMC + 'BlocksContextManager'))
     MBCM.get_context.return_value = ctx
+    # These tests cover send mechanics. The payload's shape is covered by
+    # tests/test_context_transport.py, against the real builder.
+    MBCM.create_sanitized_for_transport.return_value = {'TenantId': 't'}
     stack.enter_context(patch(AMC + 'ServiceBusMessage'))
     return act
 
