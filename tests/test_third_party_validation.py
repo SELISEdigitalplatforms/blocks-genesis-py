@@ -70,6 +70,16 @@ def keypair():
             b"abc", key, certificate, None,
             serialization.BestAvailableEncryption(b"s3cret"),
         ),
+        # No private key. `cryptography` then leaves `.cert` as None and carries the
+        # certificate in `additional_certs` instead. This is the shape a tenant's
+        # published verification certificate actually has.
+        "pfx_public_only": pkcs12.serialize_key_and_certificates(
+            b"abc", None, None, [certificate], serialization.NoEncryption()
+        ),
+        "pfx_public_only_locked": pkcs12.serialize_key_and_certificates(
+            b"abc", None, None, [certificate],
+            serialization.BestAvailableEncryption(b"s3cret"),
+        ),
     }
 
 
@@ -344,6 +354,26 @@ def test_the_loader_reads_pkcs12(keypair):
 
 def test_the_loader_reads_a_pkcs12_with_a_passphrase(keypair):
     assert auth.create_certificate(keypair["pfx_locked"], "s3cret") is not None
+
+
+def test_the_loader_reads_a_public_only_pkcs12(keypair):
+    """The regression that broke tenant login in 0.3.4.
+
+    A verification certificate has no private key, so `.cert` is None and the
+    certificate sits in `additional_certs`. Reading only `.cert` returned None here,
+    and every tenant token then failed with "Failed to load certificate"."""
+    assert auth.create_certificate(keypair["pfx_public_only"]) is not None
+
+
+def test_the_loader_reads_a_locked_public_only_pkcs12(keypair):
+    assert auth.create_certificate(keypair["pfx_public_only_locked"], "s3cret") is not None
+
+
+def test_a_public_only_bundle_yields_the_same_certificate(keypair):
+    public_only = auth.create_certificate(keypair["pfx_public_only"])
+    with_key = auth.create_certificate(keypair["pfx"])
+
+    assert public_only.fingerprint(hashes.SHA256()) == with_key.fingerprint(hashes.SHA256())
 
 
 def test_the_loader_refuses_a_pkcs12_with_the_wrong_passphrase(keypair):

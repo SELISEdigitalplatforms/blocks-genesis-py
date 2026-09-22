@@ -364,16 +364,31 @@ async def _validate_authenticated_token(
 def create_certificate(certificate_data: bytes, password: Optional[str] = None):
     """Load a certificate from PKCS#12, PEM or DER bytes.
 
-    PKCS#12 first, then a bare certificate -- the same order genesis-net uses. A
-    provider that uploads a plain .crt or .der has no PKCS#12 container at all, and
-    `additional_certs` holds the chain rather than the certificate itself.
+    PKCS#12 first, then a bare certificate -- the same order genesis-net uses, so a
+    provider that uploads a plain .crt or .der is read too.
+
+    Where the certificate sits inside a PKCS#12 depends on whether the bundle carries a
+    private key. With one it is on `.cert`; without one `.cert` is None and it is in
+    `additional_certs`. A verification certificate has no private key, so both branches
+    are needed -- reading only `.cert` fails every tenant login.
     """
     if not certificate_data:
         return None
 
     try:
         password_bytes = password.encode('utf-8') if password else None
-        return pkcs12.load_pkcs12(certificate_data, password_bytes).cert.certificate
+        bundle = pkcs12.load_pkcs12(certificate_data, password_bytes)
+
+        # A bundle holding a private key puts its certificate on `.cert`.
+        if bundle.cert is not None:
+            return bundle.cert.certificate
+
+        # A PUBLIC-ONLY bundle has no private key, so `.cert` is None and the
+        # certificate arrives in `additional_certs` instead. That is the shape a
+        # tenant's published verification certificate has, so this branch is the
+        # ordinary case here, not an edge case.
+        if bundle.additional_certs:
+            return bundle.additional_certs[0].certificate
     except Exception:
         pass
 
