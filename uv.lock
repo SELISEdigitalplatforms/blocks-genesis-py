@@ -1743,7 +1743,7 @@ wheels = [
 
 [[package]]
 name = "seliseblocks-genesis"
-version = "0.3.3"
+version = "0.3.5"
 source = { editable = "." }
 dependencies = [
     { name = "aio-pika" },
@@ -1752,6 +1752,7 @@ dependencies = [
     { name = "azure-keyvault-secrets" },
     { name = "azure-servicebus" },
     { name = "cors" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "motor" },
     { name = "opentelemetry-api" },
@@ -1759,6 +1760,7 @@ dependencies = [
     { name = "opentelemetry-instrumentation-redis" },
     { name = "opentelemetry-sdk" },
     { name = "pydantic" },
+    { name = "pyjwt" },
     { name = "pymongo" },
     { name = "python-dotenv" },
     { name = "redis" },
@@ -1784,6 +1786,7 @@ requires-dist = [
     { name = "azure-keyvault-secrets", specifier = ">=4.3.0" },
     { name = "azure-servicebus", specifier = ">=7.14.2" },
     { name = "cors", specifier = ">=1.0.1" },
+    { name = "cryptography", specifier = ">=42.0.0" },
     { name = "fastapi", specifier = ">=0.68.0" },
     { name = "motor", specifier = ">=2.5.0" },
     { name = "opentelemetry-api", specifier = ">=1.33.1" },
@@ -1791,6 +1794,7 @@ requires-dist = [
     { name = "opentelemetry-instrumentation-redis", specifier = ">=0.54b1" },
     { name = "opentelemetry-sdk", specifier = ">=1.33.1" },
     { name = "pydantic", specifier = ">=2.11.5" },
+    { name = "pyjwt", specifier = ">=2.8.0" },
     { name = "pymongo", specifier = ">=4.13.0" },
     { name = "python-dotenv", specifier = ">=0.19.0" },
     { name = "redis", specifier = ">=4.0.0" },

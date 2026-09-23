@@ -202,7 +202,7 @@ class RabbitMessageWorker:
         if security_context_raw:
             try:
                 sc = json.loads(security_context_raw)
-                BlocksContextManager.set_context(BlocksContextManager.create(**sc))
+                BlocksContextManager.set_context(BlocksContextManager.from_transport(sc))
             except Exception:
                 logger.warning("Could not parse SecurityContext header.", exc_info=True)
 

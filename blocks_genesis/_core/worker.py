@@ -20,6 +20,9 @@ from blocks_genesis._lmt.log_config import configure_logger
 from blocks_genesis._lmt.mongo_log_exporter import MongoHandler
 from blocks_genesis._lmt.tracing import configure_tracing
 from blocks_genesis._delegation.endpoint_resolver import get_endpoint_resolver
+from blocks_genesis._auth.third_party_provider_store import (
+    initialize_third_party_provider_store,
+)
 from blocks_genesis._tenant.tenant_service import initialize_tenant_service
 
 
@@ -64,6 +67,7 @@ class WorkerConsoleApp:
 
             CacheProvider.set_client(RedisClient())
             await initialize_tenant_service()
+            initialize_third_party_provider_store()
             DbContext.set_provider(MongoDbContextProvider())
             self.logger.info("Cache, TenantService, and Mongo Context initialized")
 

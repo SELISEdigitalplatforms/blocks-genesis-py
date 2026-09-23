@@ -1,4 +1,14 @@
 from blocks_genesis._auth.blocks_context import BlocksContext, BlocksContextManager
+from blocks_genesis._auth.jwt_signing_algorithm import JwtSigningAlgorithm
+from blocks_genesis._auth.third_party_provider import (
+    ThirdPartyClaimsMapping,
+    ThirdPartyJwtProvider,
+)
+from blocks_genesis._auth.third_party_provider_store import (
+    ThirdPartyJwtProviderStore,
+    get_third_party_provider_store,
+    initialize_third_party_provider_store,
+)
 from blocks_genesis._cache import CacheClient
 from blocks_genesis._cache.cache_provider import CacheProvider
 from blocks_genesis._database.db_context import DbContext
@@ -39,6 +49,12 @@ from blocks_genesis._delegation import (
 __all__ = [
     "BlocksContext",
     "BlocksContextManager",
+    "JwtSigningAlgorithm",
+    "ThirdPartyClaimsMapping",
+    "ThirdPartyJwtProvider",
+    "ThirdPartyJwtProviderStore",
+    "get_third_party_provider_store",
+    "initialize_third_party_provider_store",
     "CacheClient",
     "CacheProvider",
     "DbContext",

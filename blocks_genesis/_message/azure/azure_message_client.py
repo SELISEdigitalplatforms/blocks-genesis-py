@@ -29,13 +29,6 @@ class DateTimeEncoder(json.JSONEncoder):
             return obj.isoformat()
         return super().default(obj)
 
-def _wire_context(security_context: Any) -> dict:
-    """The security context as it travels in a message header."""
-    if security_context is None:
-        return {}
-    return dict(getattr(security_context, "__dict__", None) or {})
-
-
 class AzureMessageClient(MessageClient):
     _instance: Optional['AzureMessageClient'] = None
     _singleton_lock = threading.Lock()
@@ -68,20 +61,40 @@ class AzureMessageClient(MessageClient):
         logger.info(f"Initializing Azure Service Bus senders for queues: {queues} and topics: {topics}")
 
         for name in queues + topics:
-            self._senders[name] = (
-                self._client.get_queue_sender(queue_name=name)
-                if name in queues
-                else self._client.get_topic_sender(topic_name=name)
-            )
+            self._senders[name] = self._build_sender(name)
+
+    def _build_sender(self, name: str) -> ServiceBusSender:
+        """A sender of the kind this destination was configured as.
+
+        Anything not named as a queue is a topic, which is how an unconfigured name has
+        always been treated.
+        """
+        queues = self._message_config.azure_service_bus_configuration.queues or []
+        return (
+            self._client.get_queue_sender(queue_name=name)
+            if name in queues
+            else self._client.get_topic_sender(topic_name=name)
+        )
 
     async def _get_sender(self, name: str) -> ServiceBusSender:
-        if name in self._senders:
-            return self._senders[name]
+        if name not in self._senders:
+            self._senders[name] = self._build_sender(name)
+        return self._senders[name]
 
-        async with self._sender_locks[name]:
-            if name not in self._senders:
-                self._senders[name] = self._client.get_topic_sender(topic_name=name)
-            return self._senders[name]
+    async def _replace_sender(self, name: str) -> ServiceBusSender:
+        """Drop a sender whose link failed and put a fresh one in its place.
+
+        Called with the destination's lock held, so nothing else is inside the sender
+        while it is swapped. Closing the old one is best effort -- its handler is the
+        thing that just failed.
+        """
+        stale = self._senders.pop(name, None)
+        if stale is not None:
+            try:
+                await stale.close()
+            except Exception:
+                logger.debug("Ignoring close error on stale sender '%s'", name, exc_info=True)
+        return await self._get_sender(name)
 
 
     async def _send_to_azure_bus_async(self, consumer_message: ConsumerMessage, is_topic: bool = False):
@@ -97,8 +110,6 @@ class AzureMessageClient(MessageClient):
                 "baggage.TenantId": BlocksContextManager.get_context().tenant_id
             })
 
-            sender = await self._get_sender(consumer_message.consumer_name)
-
             payload_dict = self._serialize_payload(consumer_message.payload)
 
             message_body = EventMessage(
@@ -111,7 +122,8 @@ class AzureMessageClient(MessageClient):
                 "TraceId": activity.get_trace_id(),
                 "SpanId": activity.get_span_id(),
                 "SecurityContext": consumer_message.context or json.dumps(
-                    _wire_context(security_context), cls=DateTimeEncoder
+                    BlocksContextManager.create_sanitized_for_transport(security_context),
+                    cls=DateTimeEncoder,
                 ),
                 "Baggage": json.dumps(activity.get_all_root_attributes())
             }
@@ -130,18 +142,38 @@ class AzureMessageClient(MessageClient):
                 application_properties=application_properties
             )
 
+            name = consumer_message.consumer_name
             try:
-                await sender.send_messages(sb_message)
+                # One sender per destination is shared by every caller, and an async
+                # ServiceBusSender cannot be driven by two coroutines at once. Its
+                # `_open` sets `_running` only after several awaits, so a second caller
+                # walks in and both rebuild the link, nulling `_handler` / `_session`
+                # under each other -- surfacing as a bare AttributeError from inside the
+                # SDK. Serialise per destination so only one send is ever in a sender.
+                async with self._sender_locks[name]:
+                    sender = await self._get_sender(name)
+                    try:
+                        await sender.send_messages(sb_message)
+                    except Exception:
+                        # The handler is torn down on failure; rebuild rather than hand
+                        # the next caller a sender whose link just died.
+                        logger.warning(
+                            "Send to '%s' failed; rebuilding its sender and retrying once",
+                            name,
+                            exc_info=True,
+                        )
+                        sender = await self._replace_sender(name)
+                        await sender.send_messages(sb_message)
                 logger.info(
                     "Message published to Azure Service Bus %s '%s'",
                     "topic" if is_topic else "queue",
-                    consumer_message.consumer_name,
+                    name,
                 )
                 return True
             except Exception as ex:
                 logger.error(
                     "Failed to publish message to Azure Service Bus '%s': %s",
-                    consumer_message.consumer_name,
+                    name,
                     str(ex),
                 )
                 raise

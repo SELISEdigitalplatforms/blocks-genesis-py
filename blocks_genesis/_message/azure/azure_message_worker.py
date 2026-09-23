@@ -230,7 +230,7 @@ class AzureMessageWorker:
             return
         try:
             sc = json.loads(security_context_raw)
-            BlocksContextManager.set_context(BlocksContextManager.create(**sc))
+            BlocksContextManager.set_context(BlocksContextManager.from_transport(sc))
         except Exception as ctx_err:
             self._logger.warning("Invalid security context: %s", ctx_err)
 
