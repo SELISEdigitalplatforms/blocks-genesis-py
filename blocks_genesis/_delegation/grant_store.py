@@ -20,17 +20,26 @@ logger = logging.getLogger(__name__)
 
 
 class DelegationGrantRecord(BaseModel):
-    """The authoritative identity behind a delegation grant."""
+    """The authoritative identity behind a delegation grant.
+
+    A grant names exactly one subject: a user (`UserId` plus `TokenVersion`/`SecurityStamp`), or an
+    OAuth client authenticated with `client_credentials` (`ClientId`, no version material).
+    """
 
     tenant_id: str = Field(alias="TenantId", default="")
     user_id: str = Field(alias="UserId", default="")
     organization_id: str = Field(alias="OrganizationId", default="")
     token_version: str = Field(alias="TokenVersion", default="")
     security_stamp: str = Field(alias="SecurityStamp", default="")
+    client_id: str = Field(alias="ClientId", default="")
 
     class Config:
         extra = "ignore"
         populate_by_name = True
+
+    @property
+    def is_client_grant(self) -> bool:
+        return not self.user_id and bool(self.client_id)
 
     def to_wire_json(self) -> str:
         """Serialize with the PascalCase names the other SDKs expect."""
@@ -71,6 +80,32 @@ class DelegationGrantStore:
             SecurityStamp=security_stamp or "",
         )
 
+        return await self._write_async(record, ttl_seconds)
+
+    async def create_for_client_async(
+        self,
+        tenant_id: str,
+        client_id: str,
+        organization_id: Optional[str] = None,
+        ttl_seconds: Optional[int] = None,
+    ) -> str:
+        """Persist a grant for a `client_credentials` caller and return its opaque id.
+
+        Client tokens carry no token_version/security_stamp; IAM instead re-checks that the client
+        still exists and is active at every redemption.
+        """
+        if not tenant_id or not client_id:
+            raise ValueError("A client delegation grant requires both a tenant and a client id.")
+
+        record = DelegationGrantRecord(
+            TenantId=tenant_id,
+            ClientId=client_id,
+            OrganizationId=organization_id or "",
+        )
+
+        return await self._write_async(record, ttl_seconds)
+
+    async def _write_async(self, record: DelegationGrantRecord, ttl_seconds: Optional[int]) -> str:
         delegation_id = new_grant_id()
         lifetime = ttl_seconds if ttl_seconds and ttl_seconds > 0 else DEFAULT_GRANT_TTL_SECONDS
 
