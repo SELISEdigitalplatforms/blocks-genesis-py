@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from blocks_genesis._subscription.usage_service import SubscriptionUsageService
+from blocks_genesis._subscription.enums import SubLimitBehaviour, UsageWindow
 from blocks_genesis._subscription.models import UsageResult
 
 REPO = "blocks_genesis._subscription.repository."
@@ -69,10 +70,15 @@ def _usage_doc(
     remaining=0,
     overage=300,
     overage_allowed=True,
+    user_id=None,
 ):
     now = datetime.now(timezone.utc)
+    doc_id = f"sub-1:{meter_key}:M20260902T024500Z"
+    if user_id:
+        doc_id = f"{doc_id}:{user_id}"
     return {
-        "_id": f"sub-1:{meter_key}:M20260902T024500Z",
+        "_id": doc_id,
+        "UserId": user_id,
         "TenantId": tenant_id,
         "OrganizationId": organization_id,
         "SubscriptionId": "sub-1",
@@ -129,6 +135,41 @@ async def test_within_allowance_is_allowed(provider):
     result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
     assert result[0].allowed is True
     assert result[0].remaining == pytest.approx(400)
+
+
+@pytest.mark.asyncio
+async def test_the_overage_flag_is_carried_so_a_caller_can_cap_a_charge(provider):
+    provider.collection.docs = [
+        _usage_doc(meter_key="capped", overage_allowed=False),
+        _usage_doc(meter_key="open", overage_allowed=True),
+    ]
+    result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
+    flags = {row.meter_key: row.overage_allowed for row in result}
+    assert flags == {"capped": False, "open": True}
+
+
+@pytest.mark.asyncio
+async def test_pace_limits_are_read_off_the_row(provider):
+    """2000 credits a month, 100 a day, 60 spent today."""
+    start = datetime(2026, 9, 29, tzinfo=timezone.utc)
+    doc = _usage_doc(meter_key="ai-credits")
+    doc["SubLimits"] = [
+        {
+            "Window": 1, "WindowCount": 1, "Rolling": False, "Behaviour": 0,
+            "Quantity": 100, "Used": 60, "Remaining": 40, "Exceeded": False,
+            "WindowStartUtc": start, "WindowEndUtc": start + timedelta(days=1),
+        }
+    ]
+    provider.collection.docs = [doc, _usage_doc(meter_key="no-pace")]
+
+    result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
+    by_key = {row.meter_key: row for row in result}
+
+    [day] = by_key["ai-credits"].sub_limits
+    assert (day.window, day.behaviour) == (UsageWindow.DAY, SubLimitBehaviour.REFUSE)
+    assert (day.quantity, day.used, day.remaining, day.exceeded) == (100, 60, 40, False)
+    assert day.window_end_utc == start + timedelta(days=1)
+    assert by_key["no-pace"].sub_limits == []
 
 
 @pytest.mark.asyncio
@@ -311,3 +352,84 @@ def test_the_scale_is_clamped_to_the_api_maximum():
     assert MAX_QUANTITY_SCALE == 6
     assert _to_result({"MeterKey": "m", "QuantityScale": 9}).quantity_scale == 6
     assert _to_result({"MeterKey": "m", "QuantityScale": -2}).quantity_scale == 0
+
+
+# ---------------- whose rows: the organization's, or one member's ----------------
+
+
+@pytest.mark.asyncio
+async def test_the_organization_read_leaves_out_every_member_row(provider):
+    # The defect this scope split fixes: both kinds sit under the same OrganizationId, so
+    # an unscoped read handed the caller one organization row and one row per member, all
+    # for the same meter.
+    provider.collection.docs = [
+        _usage_doc(meter_key="ai-credits", used=10, remaining=90),
+        _usage_doc(meter_key="ai-credits", used=7, remaining=93, user_id="u1"),
+        _usage_doc(meter_key="ai-credits", used=3, remaining=97, user_id="u2"),
+    ]
+    result = await SubscriptionUsageService.get_usage_current(
+        tenant_id="t1", organization_id="default"
+    )
+    assert len(result) == 1
+    assert result[0].used == pytest.approx(10)
+
+
+@pytest.mark.asyncio
+async def test_a_row_written_before_the_user_field_existed_is_still_the_organizations(provider):
+    doc = _usage_doc()
+    del doc["UserId"]
+    provider.collection.docs = [doc]
+    result = await SubscriptionUsageService.get_usage_current(
+        tenant_id="t1", organization_id="default"
+    )
+    assert len(result) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_member_read_returns_only_that_members_rows(provider):
+    provider.collection.docs = [
+        _usage_doc(meter_key="ai-credits", used=10, remaining=90),
+        _usage_doc(meter_key="ai-credits", used=7, remaining=93, user_id="u1"),
+        _usage_doc(meter_key="ai-credits", used=3, remaining=97, user_id="u2"),
+    ]
+    result = await SubscriptionUsageService.get_usage_current(
+        tenant_id="t1", organization_id="default", user_id="u1"
+    )
+    assert len(result) == 1
+    assert result[0].used == pytest.approx(7)
+    assert provider.collection.last_filter["UserId"] == "u1"
+
+
+@pytest.mark.asyncio
+async def test_a_member_with_no_rows_of_their_own_reads_empty_not_the_organizations(provider):
+    provider.collection.docs = [_usage_doc(meter_key="ai-credits")]
+    result = await SubscriptionUsageService.get_usage_current(
+        tenant_id="t1", organization_id="default", user_id="u1"
+    )
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_an_empty_user_id_reads_the_organization(provider):
+    provider.collection.docs = [_usage_doc(), _usage_doc(user_id="u1")]
+    result = await SubscriptionUsageService.get_usage_current(
+        tenant_id="t1", organization_id="default", user_id=""
+    )
+    assert len(result) == 1
+    assert provider.collection.last_filter["UserId"] == {"$in": [None, ""]}
+
+
+@pytest.mark.asyncio
+async def test_an_organization_row_storing_an_empty_user_id_is_still_read(provider):
+    """What the live collection actually holds. Matching only on null returned nothing,
+    which reads as no live subscription and refuses the whole organization."""
+    doc = _usage_doc()
+    doc["UserId"] = ""
+    provider.collection.docs = [doc, _usage_doc(user_id="u1")]
+
+    result = await SubscriptionUsageService.get_usage_current(
+        tenant_id="t1", organization_id="default"
+    )
+
+    assert len(result) == 1
+    assert result[0].used == pytest.approx(800)

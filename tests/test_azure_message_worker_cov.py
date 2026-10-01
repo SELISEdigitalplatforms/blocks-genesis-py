@@ -139,10 +139,7 @@ async def test_run_queues_only():
 
 
 @pytest.mark.asyncio
-async def test_run_topics_raises_attribute_error():
-    # Characterization of a real bug: run() reads
-    # self._message_config.subscription_name (a dict) but MessageConfiguration
-    # only has a get_subscription_name() method -> AttributeError on any topic.
+async def test_run_topics_uses_the_service_subscription():
     w = _worker()
     client = MagicMock()
     client.get_subscription_receiver.return_value = MagicMock()
@@ -150,8 +147,11 @@ async def test_run_topics_raises_attribute_error():
     w._message_config.azure_service_bus_configuration.queues = []
     w._message_config.azure_service_bus_configuration.topics = ['t1']
     w.safe_receiver_wrapper = AsyncMock()
-    with pytest.raises(AttributeError):
-        await w.run()
+    await w.run()
+    kwargs = client.get_subscription_receiver.call_args.kwargs
+    assert kwargs['topic_name'] == 't1'
+    assert kwargs['subscription_name'] == w._message_config.get_subscription_name('t1')
+    assert len(w._receivers) == 1
 
 
 # ---------------- safe_receiver_wrapper ----------------
