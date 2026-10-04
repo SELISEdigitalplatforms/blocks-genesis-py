@@ -50,6 +50,24 @@ def authenticated_context(tenant_id="tenant-1", user_id="user-1", org_id="org-1"
     )
 
 
+def impersonating_context(
+    target_tenant_id="project-tenant",
+    root_tenant_id="console-tenant",
+    session_id="session-1",
+    impersonated=True,
+):
+    return BlocksContextManager.create(
+        tenant_id=target_tenant_id,
+        roles=["admin"],
+        user_id="user-1",
+        is_authenticated=True,
+        organization_id="org-1",
+        original_tenant_id=root_tenant_id,
+        impersonated=impersonated,
+        impersonation_session_id=session_id,
+    )
+
+
 @pytest.fixture(autouse=True)
 def clean_ambient_state():
     BlocksContextManager.clear_context()
@@ -82,6 +100,8 @@ async def test_create_writes_pascal_case_record_with_two_day_ttl():
         "TokenVersion": "3",
         "SecurityStamp": "stamp-9",
         "ClientId": "",
+        "ImpersonationSessionId": "",
+        "OriginalTenantId": "",
     }
 
 
@@ -330,6 +350,8 @@ async def test_create_for_client_writes_a_client_record_with_no_user_or_version_
         "TokenVersion": "",
         "SecurityStamp": "",
         "ClientId": "client-1",
+        "ImpersonationSessionId": "",
+        "OriginalTenantId": "",
     }
 
 
@@ -425,3 +447,67 @@ def test_auth_claims_context_coerces_version_material_to_strings():
 
     AuthClaimsContext.clear()
     assert AuthClaimsContext.version_material() == (None, None)
+
+
+# --------------------------------------------------------------------------- impersonation
+
+
+async def test_create_records_the_impersonation_session_and_root_tenant():
+    cache = FakeCache()
+    store = DelegationGrantStore(cache)
+
+    delegation_id = await store.create_async(impersonating_context(), "3", "stamp-9")
+    payload = json.loads(cache.values[constants.grant_key(delegation_id)])
+
+    assert payload["ImpersonationSessionId"] == "session-1"
+    # The tenant on the grant is the one being worked in; the root tenant rides along only so IAM
+    # knows which directory holds the session, and re-checks it against that record.
+    assert payload["TenantId"] == "project-tenant"
+    assert payload["OriginalTenantId"] == "console-tenant"
+
+
+async def test_create_leaves_the_impersonation_fields_empty_for_an_ordinary_caller():
+    cache = FakeCache()
+    store = DelegationGrantStore(cache)
+
+    delegation_id = await store.create_async(authenticated_context(), "3", "stamp-9")
+    payload = json.loads(cache.values[constants.grant_key(delegation_id)])
+
+    assert payload["ImpersonationSessionId"] == ""
+    assert payload["OriginalTenantId"] == ""
+
+
+async def test_create_ignores_a_stray_session_id_when_the_context_is_not_impersonating():
+    # A session id with impersonated false is not an impersonation. Trusting the id alone would
+    # let a stale context hand IAM a live session to resolve against.
+    cache = FakeCache()
+    store = DelegationGrantStore(cache)
+
+    delegation_id = await store.create_async(impersonating_context(impersonated=False), "3", "stamp-9")
+    payload = json.loads(cache.values[constants.grant_key(delegation_id)])
+
+    assert payload["ImpersonationSessionId"] == ""
+    assert payload["OriginalTenantId"] == ""
+
+
+def test_a_grant_written_before_the_fields_existed_still_reads():
+    # Every grant already in Redis when this ships has neither name.
+    legacy = {
+        "TenantId": "tenant-1",
+        "UserId": "user-1",
+        "OrganizationId": "org-1",
+        "TokenVersion": "3",
+        "SecurityStamp": "stamp-9",
+    }
+
+    record = DelegationGrantRecord(**legacy)
+
+    assert record.impersonation_session_id == ""
+    assert record.original_tenant_id == ""
+    assert record.is_impersonated is False
+    assert record.user_id == "user-1"
+
+
+def test_is_impersonated_follows_the_session_id():
+    assert DelegationGrantRecord(TenantId="t", UserId="u", ImpersonationSessionId="s").is_impersonated is True
+    assert DelegationGrantRecord(TenantId="t", UserId="u").is_impersonated is False

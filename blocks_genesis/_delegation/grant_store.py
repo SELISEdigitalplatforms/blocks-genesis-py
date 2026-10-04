@@ -24,6 +24,12 @@ class DelegationGrantRecord(BaseModel):
 
     A grant names exactly one subject: a user (`UserId` plus `TokenVersion`/`SecurityStamp`), or an
     OAuth client authenticated with `client_credentials` (`ClientId`, no version material).
+
+    A grant made while impersonating also names the session it belongs to
+    (`ImpersonationSessionId`) and the tenant the user really lives in (`OriginalTenantId`). The
+    second is a *pointer*, not a claim of authority: it says which directory holds the session
+    record, and IAM only mints once that record agrees about the user, the target tenant and its
+    own root tenant.
     """
 
     tenant_id: str = Field(alias="TenantId", default="")
@@ -32,6 +38,8 @@ class DelegationGrantRecord(BaseModel):
     token_version: str = Field(alias="TokenVersion", default="")
     security_stamp: str = Field(alias="SecurityStamp", default="")
     client_id: str = Field(alias="ClientId", default="")
+    impersonation_session_id: str = Field(alias="ImpersonationSessionId", default="")
+    original_tenant_id: str = Field(alias="OriginalTenantId", default="")
 
     class Config:
         extra = "ignore"
@@ -40,6 +48,11 @@ class DelegationGrantRecord(BaseModel):
     @property
     def is_client_grant(self) -> bool:
         return not self.user_id and bool(self.client_id)
+
+    @property
+    def is_impersonated(self) -> bool:
+        """True when the grant was made while impersonating."""
+        return bool(self.impersonation_session_id)
 
     def to_wire_json(self) -> str:
         """Serialize with the PascalCase names the other SDKs expect."""
@@ -72,12 +85,19 @@ class DelegationGrantStore:
         if context is None or not context.tenant_id or not context.user_id:
             raise ValueError("A delegation grant requires both a tenant and an authenticated user.")
 
+        impersonated = bool(getattr(context, "impersonated", False))
+
         record = DelegationGrantRecord(
             TenantId=context.tenant_id,
             UserId=context.user_id,
             OrganizationId=context.organization_id or "",
             TokenVersion=token_version or "",
             SecurityStamp=security_stamp or "",
+            # Carried for every caller that reaches here, so none of them has to know what
+            # impersonation is. A session id without `impersonated` is not an impersonation: a
+            # stale context must not be able to hand IAM a live session to resolve against.
+            ImpersonationSessionId=(getattr(context, "impersonation_session_id", "") or "") if impersonated else "",
+            OriginalTenantId=(getattr(context, "original_tenant_id", "") or "") if impersonated else "",
         )
 
         return await self._write_async(record, ttl_seconds)

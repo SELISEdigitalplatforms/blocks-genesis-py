@@ -41,6 +41,10 @@ class DelegationGrantFactory:
         context = BlocksContextManager.get_context()
 
         if context is None or not context.is_authenticated or not context.tenant_id:
+            # Said out loud, because the cost of this being silent is paid downstream and far
+            # away: the message is sent, the consumer has no caller, and every Blocks call it
+            # makes is skipped with nothing anywhere saying why.
+            logger.debug("No authenticated caller in context; sending without a delegation grant.")
             return None
 
         # A user token may also carry client_id (the OIDC client it was issued to); the user wins.
@@ -50,6 +54,10 @@ class DelegationGrantFactory:
         if getattr(context, "client_id", ""):
             return await self._create_for_client(context, ttl_seconds)
 
+        logger.debug(
+            "The caller in context names neither a user nor a client; sending without a "
+            "delegation grant."
+        )
         return None
 
     async def _create_for_client(self, context, ttl_seconds: Optional[int]) -> Optional[str]:
