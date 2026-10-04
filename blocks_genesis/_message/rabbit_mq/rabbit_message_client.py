@@ -120,7 +120,7 @@ class RabbitMessageClient(MessageClient):
                 "TraceId": Activity.get_trace_id(),
                 "SpanId": Activity.get_span_id(),
                 "SecurityContext": consumer_message.context or json.dumps(
-                    security_context.model_dump(mode="json") if security_context else {}
+                    BlocksContextManager.create_sanitized_for_transport(security_context)
                 ),
                 "Baggage": json.dumps(activity.get_all_root_attributes()),
             }

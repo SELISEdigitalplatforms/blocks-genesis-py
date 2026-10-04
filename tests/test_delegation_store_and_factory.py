@@ -50,6 +50,24 @@ def authenticated_context(tenant_id="tenant-1", user_id="user-1", org_id="org-1"
     )
 
 
+def impersonating_context(
+    target_tenant_id="project-tenant",
+    root_tenant_id="console-tenant",
+    session_id="session-1",
+    impersonated=True,
+):
+    return BlocksContextManager.create(
+        tenant_id=target_tenant_id,
+        roles=["admin"],
+        user_id="user-1",
+        is_authenticated=True,
+        organization_id="org-1",
+        original_tenant_id=root_tenant_id,
+        impersonated=impersonated,
+        impersonation_session_id=session_id,
+    )
+
+
 @pytest.fixture(autouse=True)
 def clean_ambient_state():
     BlocksContextManager.clear_context()
@@ -81,6 +99,9 @@ async def test_create_writes_pascal_case_record_with_two_day_ttl():
         "OrganizationId": "org-1",
         "TokenVersion": "3",
         "SecurityStamp": "stamp-9",
+        "ClientId": "",
+        "ImpersonationSessionId": "",
+        "OriginalTenantId": "",
     }
 
 
@@ -270,6 +291,22 @@ async def test_factory_does_not_chain_a_grant_from_another_tenant():
     assert await factory.create_for_send_async() is None
 
 
+@pytest.mark.parametrize("held_user_id,held_org_id", [("user-other", "org-1"), ("user-1", "org-other")])
+async def test_factory_does_not_chain_a_grant_naming_another_user_or_organization(held_user_id, held_org_id):
+    # The worker's context came from the message SecurityContext; it must agree with the held grant.
+    cache = FakeCache()
+    store = DelegationGrantStore(cache)
+    held = await store.create_async(
+        authenticated_context(user_id=held_user_id, org_id=held_org_id), "5", "stamp-5"
+    )
+
+    BlocksContextManager.set_context(authenticated_context())
+    AuthClaimsContext.clear()
+    DelegatedTokenContext.set(held)
+
+    assert await DelegationGrantFactory(store).create_for_send_async() is None
+
+
 async def test_factory_returns_none_when_the_store_raises():
     class ExplodingStore(DelegationGrantStore):
         async def create_async(self, *args, **kwargs):
@@ -282,6 +319,106 @@ async def test_factory_returns_none_when_the_store_raises():
 
     # A send must not fail because delegation could not be set up.
     assert await factory.create_for_send_async() is None
+
+
+# --------------------------------------------------------------------------- client grants
+
+
+def client_context(tenant_id="tenant-1", client_id="client-1", org_id="org-1"):
+    return BlocksContextManager.create(
+        tenant_id=tenant_id,
+        roles=["service"],
+        user_id="",
+        is_authenticated=True,
+        organization_id=org_id,
+        client_id=client_id,
+    )
+
+
+async def test_create_for_client_writes_a_client_record_with_no_user_or_version_material():
+    cache = FakeCache()
+    store = DelegationGrantStore(cache)
+
+    delegation_id = await store.create_for_client_async("tenant-1", "client-1", "org-1")
+
+    key = constants.grant_key(delegation_id)
+    assert cache.ttls[key] == constants.DEFAULT_GRANT_TTL_SECONDS
+    assert json.loads(cache.values[key]) == {
+        "TenantId": "tenant-1",
+        "UserId": "",
+        "OrganizationId": "org-1",
+        "TokenVersion": "",
+        "SecurityStamp": "",
+        "ClientId": "client-1",
+        "ImpersonationSessionId": "",
+        "OriginalTenantId": "",
+    }
+
+
+@pytest.mark.parametrize("tenant_id,client_id", [("", "client-1"), ("tenant-1", "")])
+async def test_create_for_client_rejects_a_missing_tenant_or_client(tenant_id, client_id):
+    with pytest.raises(ValueError):
+        await DelegationGrantStore(FakeCache()).create_for_client_async(tenant_id, client_id)
+
+
+async def test_factory_creates_a_client_grant_for_a_client_credentials_token():
+    BlocksContextManager.set_context(client_context())
+    AuthClaimsContext.set({"client_id": "client-1", "tenant_id": "tenant-1"})
+
+    cache = FakeCache()
+    delegation_id = await DelegationGrantFactory(DelegationGrantStore(cache)).create_for_send_async()
+
+    assert delegation_id is not None
+    payload = json.loads(cache.values[constants.grant_key(delegation_id)])
+    assert payload["ClientId"] == "client-1"
+    assert payload["UserId"] == ""
+
+
+async def test_factory_chains_a_client_grant_for_worker_originated_sends():
+    cache = FakeCache()
+    store = DelegationGrantStore(cache)
+    held = await store.create_for_client_async("tenant-1", "client-1", "org-held")
+
+    BlocksContextManager.set_context(client_context())
+    DelegatedTokenContext.set(held)
+
+    chained = await DelegationGrantFactory(store).create_for_send_async()
+
+    assert chained is not None and chained != held
+    payload = json.loads(cache.values[constants.grant_key(chained)])
+    assert payload["ClientId"] == "client-1"
+    assert payload["OrganizationId"] == "org-held"
+
+
+async def test_factory_does_not_create_a_client_grant_from_message_context_alone():
+    # In a worker the client id came from the message SecurityContext; nothing vouches for it.
+    BlocksContextManager.set_context(client_context())
+
+    cache = FakeCache()
+    assert await DelegationGrantFactory(DelegationGrantStore(cache)).create_for_send_async() is None
+    assert cache.set_calls == 0
+
+
+async def test_factory_does_not_chain_a_client_grant_naming_another_client():
+    cache = FakeCache()
+    store = DelegationGrantStore(cache)
+    held = await store.create_for_client_async("tenant-1", "client-other")
+
+    BlocksContextManager.set_context(client_context(client_id="client-1"))
+    DelegatedTokenContext.set(held)
+
+    assert await DelegationGrantFactory(store).create_for_send_async() is None
+
+
+async def test_factory_does_not_chain_a_user_grant_from_a_held_client_grant():
+    cache = FakeCache()
+    store = DelegationGrantStore(cache)
+    held = await store.create_for_client_async("tenant-1", "client-1")
+
+    BlocksContextManager.set_context(authenticated_context())
+    DelegatedTokenContext.set(held)
+
+    assert await DelegationGrantFactory(store).create_for_send_async() is None
 
 
 # --------------------------------------------------------------------------- context
@@ -310,3 +447,67 @@ def test_auth_claims_context_coerces_version_material_to_strings():
 
     AuthClaimsContext.clear()
     assert AuthClaimsContext.version_material() == (None, None)
+
+
+# --------------------------------------------------------------------------- impersonation
+
+
+async def test_create_records_the_impersonation_session_and_root_tenant():
+    cache = FakeCache()
+    store = DelegationGrantStore(cache)
+
+    delegation_id = await store.create_async(impersonating_context(), "3", "stamp-9")
+    payload = json.loads(cache.values[constants.grant_key(delegation_id)])
+
+    assert payload["ImpersonationSessionId"] == "session-1"
+    # The tenant on the grant is the one being worked in; the root tenant rides along only so IAM
+    # knows which directory holds the session, and re-checks it against that record.
+    assert payload["TenantId"] == "project-tenant"
+    assert payload["OriginalTenantId"] == "console-tenant"
+
+
+async def test_create_leaves_the_impersonation_fields_empty_for_an_ordinary_caller():
+    cache = FakeCache()
+    store = DelegationGrantStore(cache)
+
+    delegation_id = await store.create_async(authenticated_context(), "3", "stamp-9")
+    payload = json.loads(cache.values[constants.grant_key(delegation_id)])
+
+    assert payload["ImpersonationSessionId"] == ""
+    assert payload["OriginalTenantId"] == ""
+
+
+async def test_create_ignores_a_stray_session_id_when_the_context_is_not_impersonating():
+    # A session id with impersonated false is not an impersonation. Trusting the id alone would
+    # let a stale context hand IAM a live session to resolve against.
+    cache = FakeCache()
+    store = DelegationGrantStore(cache)
+
+    delegation_id = await store.create_async(impersonating_context(impersonated=False), "3", "stamp-9")
+    payload = json.loads(cache.values[constants.grant_key(delegation_id)])
+
+    assert payload["ImpersonationSessionId"] == ""
+    assert payload["OriginalTenantId"] == ""
+
+
+def test_a_grant_written_before_the_fields_existed_still_reads():
+    # Every grant already in Redis when this ships has neither name.
+    legacy = {
+        "TenantId": "tenant-1",
+        "UserId": "user-1",
+        "OrganizationId": "org-1",
+        "TokenVersion": "3",
+        "SecurityStamp": "stamp-9",
+    }
+
+    record = DelegationGrantRecord(**legacy)
+
+    assert record.impersonation_session_id == ""
+    assert record.original_tenant_id == ""
+    assert record.is_impersonated is False
+    assert record.user_id == "user-1"
+
+
+def test_is_impersonated_follows_the_session_id():
+    assert DelegationGrantRecord(TenantId="t", UserId="u", ImpersonationSessionId="s").is_impersonated is True
+    assert DelegationGrantRecord(TenantId="t", UserId="u").is_impersonated is False

@@ -86,6 +86,11 @@ class Tenant(BaseEntity):
         default=None
     )
 
+    # Gates external identity providers outright rather than merely preferring them. A
+    # missing value is False, so an unauthenticated caller cannot provoke an outbound key
+    # fetch on a tenant that never opted in.
+    is_third_party_jwt_enabled: bool = Field(alias="IsThirdPartyJwtEnabled", default=False)
+
     is_root_tenant: bool = Field(alias="IsRootTenant", default=False)
 
     environment: Optional[str] = Field(alias="Environment", default="")

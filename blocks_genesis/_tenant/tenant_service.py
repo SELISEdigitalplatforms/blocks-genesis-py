@@ -142,6 +142,17 @@ class TenantService:
             return tenant.db_name, tenant.db_connection_string
         return None, None
 
+    def get_root_tenant_id(self) -> Optional[str]:
+        """The root tenant's id, from the cache.
+
+        Public so consumers stop scanning the private `_tenant_cache` themselves -- that
+        breaks the moment the cache gains an expiry or evicts a disabled tenant.
+        """
+        return next(
+            (t.tenant_id for t in self._tenant_cache.values() if t.is_root_tenant),
+            None,
+        )
+
     def get_tenant_database_connection_strings(self) -> Dict[str, Tuple[str, str]]:
         """
         Get all tenant database connection strings from cache.

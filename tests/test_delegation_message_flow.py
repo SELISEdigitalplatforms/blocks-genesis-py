@@ -1,6 +1,8 @@
 """Both transports: the send stamps the header, the worker reads it, the settle releases it."""
 
 import json
+from asyncio import Lock
+from collections import defaultdict
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -52,6 +54,9 @@ async def azure_send(grant_id, message):
     from blocks_genesis._message.azure.azure_message_client import AzureMessageClient
 
     client = AzureMessageClient.__new__(AzureMessageClient)
+    # Sends are serialised per destination, so the real locks are needed even when the
+    # sender itself is faked.
+    client._sender_locks = defaultdict(Lock)
 
     sender = MagicMock()
     sender.send_messages = AsyncMock()

@@ -45,14 +45,16 @@ async def test_get_tenant_cert_cache_miss(mock_fetch):
 
 @patch('cryptography.hazmat.primitives.serialization.pkcs12.load_pkcs12')
 def test_create_certificate_success(mock_load):
+    # The leaf certificate, not additional_certs -- that holds the chain.
     cert = MagicMock()
-    cert.additional_certs = [MagicMock(certificate='certobj')]
+    cert.cert.certificate = 'certobj'
     mock_load.return_value = cert
     result = auth.create_certificate(b'data', 'pass')
     assert result == 'certobj'
 
 @patch('cryptography.hazmat.primitives.serialization.pkcs12.load_pkcs12', side_effect=Exception('fail'))
 def test_create_certificate_fail(mock_load):
+    # Not PKCS#12, and not a readable PEM or DER either.
     result = auth.create_certificate(b'data', 'pass')
     assert result is None
 
