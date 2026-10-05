@@ -71,6 +71,7 @@ def _usage_doc(
     overage=300,
     overage_allowed=True,
     user_id=None,
+    scale=0,
 ):
     now = datetime.now(timezone.utc)
     doc_id = f"sub-1:{meter_key}:M20260902T024500Z"
@@ -88,6 +89,7 @@ def _usage_doc(
         "PeriodKey": "M20260902T024500Z",
         "PeriodStartUtc": now - timedelta(days=1),
         "PeriodEndUtc": now + timedelta(days=29),
+        "QuantityScale": scale,
         "Included": included,
         "Used": used,
         "Remaining": remaining,
@@ -127,6 +129,40 @@ async def test_over_allowance_without_overage_is_not_allowed(provider):
     provider.collection.docs = [_usage_doc(used=800, included=500, overage_allowed=False)]
     result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
     assert result[0].allowed is False
+
+
+@pytest.mark.asyncio
+async def test_allowance_used_up_without_overage_is_not_allowed(provider):
+    provider.collection.docs = [_usage_doc(used=500, included=500, remaining=0, overage=0, overage_allowed=False)]
+    result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
+    assert result[0].allowed is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "used, included, scale, allowed",
+    [
+        (499.9999999, 500, 2, False),  # rounds to 500.00, so spent
+        (499.99, 500, 2, True),  # a whole cent is still left
+        (500.004, 500, 2, False),
+        (499.5, 500, 0, True),  # whole-number meter compares as is
+        (499, 500, 0, True),
+        (500, 500, 0, False),
+    ],
+)
+async def test_room_is_compared_at_the_meters_precision(provider, used, included, scale, allowed):
+    provider.collection.docs = [
+        _usage_doc(used=used, included=included, remaining=0, overage=0, overage_allowed=False, scale=scale)
+    ]
+    result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
+    assert result[0].allowed is allowed
+
+
+@pytest.mark.asyncio
+async def test_allowance_used_up_with_overage_is_allowed(provider):
+    provider.collection.docs = [_usage_doc(used=500, included=500, remaining=0, overage=0, overage_allowed=True)]
+    result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
+    assert result[0].allowed is True
 
 
 @pytest.mark.asyncio

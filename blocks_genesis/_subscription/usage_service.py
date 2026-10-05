@@ -55,6 +55,12 @@ def _scale(value: Any) -> int:
         return 0
 
 
+def _has_room(used: float, included: float, scale: int) -> bool:
+    """Whether any allowance is left. A fractional meter rounds what is used to its own decimal
+    places, so 499.9999999 used of 500 reads as spent, not as room; a whole-number meter compares as is."""
+    return (round(used, scale) if scale else used) < included
+
+
 def _to_sub_limit(doc: Dict[str, Any]) -> UsageSubLimit:
     return UsageSubLimit(
         window=int(doc.get("Window") or 0),
@@ -76,7 +82,7 @@ def _to_result(doc: Dict[str, Any]) -> UsageResult:
     overage_allowed = bool(doc.get("OverageAllowed", True))
     scale = _scale(doc.get("QuantityScale"))
     return UsageResult(
-        allowed=used <= included or overage_allowed,
+        allowed=_has_room(used, included, scale) or overage_allowed,
         meter_key=doc.get("MeterKey") or "",
         used=used,
         remaining=_number(doc.get("Remaining")),
