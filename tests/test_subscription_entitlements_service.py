@@ -8,10 +8,12 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
 from bson import Decimal128
 
 from blocks_genesis._subscription.enums import EntitlementLimitKind
 from blocks_genesis._subscription.models import SubscriptionEntitlements, UsageSnapshot
+from blocks_genesis._subscription.repository import get_current_entitlement_docs
 from blocks_genesis._subscription.usage_service import SubscriptionUsageService
 
 REPO = "blocks_genesis._subscription.repository."
@@ -34,7 +36,12 @@ def _matches_condition(actual, condition):
 
 
 def _matches(doc, filt):
-    return all(_matches_condition(doc.get(key), condition) for key, condition in filt.items())
+    return all(
+        any(_matches(doc, branch) for branch in condition)
+        if key == "$or"
+        else _matches_condition(doc.get(key), condition)
+        for key, condition in filt.items()
+    )
 
 
 class _FakeCursor(list):
@@ -104,6 +111,7 @@ def _entitlement_doc(
         "PlanCode": plan_code,
         "SubscriptionVersion": version,
         "SchemaVersion": 2,
+        "CurrentPeriodEndUtc": datetime.now(timezone.utc) + timedelta(days=7),
         "Entitlements": [
             {
                 "Key": key,
@@ -425,7 +433,30 @@ async def test_the_plan_read_is_scoped_to_the_tenant_org_and_live_statuses(provi
     assert filt["OrganizationId"] == "default"
     # The literals are the point: they pin the wire values blocks-utilities writes for
     # Active and Trialing, so a wrong enum mapping cannot make this test agree with it.
-    assert sorted(filt["SubscriptionStatus"]["$in"]) == [2, 3]
+    assert [branch["SubscriptionStatus"] for branch in filt["$or"]] == [3, 2]
+    assert "$gt" in filt["$or"][1]["CurrentPeriodEndUtc"]
+
+
+@pytest.mark.asyncio
+async def test_a_trialing_plan_stops_counting_once_the_trial_has_ended(provider):
+    ended = _entitlement_doc(status=2)
+    ended["CurrentPeriodEndUtc"] = datetime.now(timezone.utc) - timedelta(hours=1)
+    provider.entitlements().docs = [ended]
+    assert await get_current_entitlement_docs("t1", "default") == []
+
+
+@pytest.mark.asyncio
+async def test_a_trialing_plan_counts_while_the_trial_runs(provider):
+    provider.entitlements().docs = [_entitlement_doc(status=2)]
+    assert len(await get_current_entitlement_docs("t1", "default")) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_active_plan_is_not_cut_off_by_a_late_renewal(provider):
+    late = _entitlement_doc(status=3)
+    late["CurrentPeriodEndUtc"] = datetime.now(timezone.utc) - timedelta(hours=1)
+    provider.entitlements().docs = [late]
+    assert len(await get_current_entitlement_docs("t1", "default")) == 1
 
 
 @pytest.mark.asyncio

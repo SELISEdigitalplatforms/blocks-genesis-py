@@ -35,6 +35,10 @@ class _FakeCollection:
         # An unknown operator raises rather than passing: a fake that quietly ignores part
         # of a filter reports a query as working when the real collection would not.
         for key, value in filt.items():
+            if key == "$or":
+                if not any(_FakeCollection._matches(doc, branch) for branch in value):
+                    return False
+                continue
             actual = doc.get(key)
             if isinstance(value, dict):
                 for operator, expected in value.items():
@@ -151,7 +155,7 @@ def test_a_real_request_carries_the_snapshot_from_dependency_to_handler():
     assert provider.requested == [("SubscriptionUsageCurrent", "t1")]
     assert collection.last_filter["TenantId"] == "t1"
     assert collection.last_filter["OrganizationId"] == "default"
-    assert collection.last_filter["SubscriptionStatus"] == 3
+    assert [b["SubscriptionStatus"] for b in collection.last_filter["$or"]] == [3, 2]
 
 
 def test_a_real_request_with_no_matching_row_reports_an_empty_snapshot():

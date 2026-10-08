@@ -13,10 +13,21 @@ logger = logging.getLogger(__name__)
 _USAGE_CURRENT = "SubscriptionUsageCurrent"
 _ENTITLEMENTS_CURRENT = "SubscriptionEntitlementsCurrent"
 
-# A trial grants its plan the same as a paid subscription does, so its entitlements count
-# as live. Balances stay Active-only: a trial that has not started billing has nothing to
-# draw down.
-_LIVE_ENTITLEMENT_STATUSES = (int(SubscriptionStatus.ACTIVE), int(SubscriptionStatus.TRIALING))
+def _live_status(now: datetime) -> Dict[str, Any]:
+    """Active rows, plus trialing rows whose trial has not ended.
+
+    A trial grants its plan the same as a paid subscription does, so its entitlements and
+    usage balances both count as live. A trial's usage window can outlast the trial itself, so
+    a trialing row is also bounded by CurrentPeriodEndUtc. An active row is not: a renewal
+    sweep that runs late must not cut off a paying subscriber.
+    """
+    return {"$or": [
+        {"SubscriptionStatus": int(SubscriptionStatus.ACTIVE)},
+        {
+            "SubscriptionStatus": int(SubscriptionStatus.TRIALING),
+            "CurrentPeriodEndUtc": {"$gt": now},
+        },
+    ]}
 
 
 async def _collection(name: str, tenant_id: str):
@@ -27,7 +38,7 @@ async def _collection(name: str, tenant_id: str):
 async def get_current_usage_docs(
     tenant_id: str, organization_id: str, user_id: Optional[str] = None
 ) -> List[Dict[str, Any]]:
-    """One row per meter for the current period. Active subscriptions only.
+    """One row per meter for the current period. Active and trialing subscriptions.
 
     The collection holds the organization's own rows and one set per member side by side
     under the same OrganizationId, told apart only by UserId. Without a user_id this reads
@@ -44,7 +55,7 @@ async def get_current_usage_docs(
         "TenantId": tenant_id,
         "OrganizationId": organization_id,
         "UserId": user_id if user_id else {"$in": [None, ""]},
-        "SubscriptionStatus": int(SubscriptionStatus.ACTIVE),
+        **_live_status(now),
         "PeriodStartUtc": {"$lte": now},
         "PeriodEndUtc": {"$gt": now},
     })
@@ -77,7 +88,7 @@ async def get_scoped_usage_docs(
         "TenantId": tenant_id,
         "OrganizationId": organization_id,
         "UserId": {"$in": owners},
-        "SubscriptionStatus": int(SubscriptionStatus.ACTIVE),
+        **_live_status(now),
         "PeriodStartUtc": {"$lte": now},
         "PeriodEndUtc": {"$gt": now},
     })
@@ -97,6 +108,6 @@ async def get_current_entitlement_docs(
     cursor = collection.find({
         "TenantId": tenant_id,
         "OrganizationId": organization_id,
-        "SubscriptionStatus": {"$in": list(_LIVE_ENTITLEMENT_STATUSES)},
+        **_live_status(datetime.now(timezone.utc)),
     }).sort("SubscriptionVersion", -1)
     return list(cursor)

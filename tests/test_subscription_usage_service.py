@@ -43,7 +43,12 @@ def _matches_condition(actual, condition):
 
 
 def _matches(doc, filt):
-    return all(_matches_condition(doc.get(key), condition) for key, condition in filt.items())
+    return all(
+        any(_matches(doc, branch) for branch in condition)
+        if key == "$or"
+        else _matches_condition(doc.get(key), condition)
+        for key, condition in filt.items()
+    )
 
 
 class _FakeProvider:
@@ -89,6 +94,7 @@ def _usage_doc(
         "PeriodKey": "M20260902T024500Z",
         "PeriodStartUtc": now - timedelta(days=1),
         "PeriodEndUtc": now + timedelta(days=29),
+        "CurrentPeriodEndUtc": now + timedelta(days=7),
         "QuantityScale": scale,
         "Included": included,
         "Used": used,
@@ -209,16 +215,19 @@ async def test_pace_limits_are_read_off_the_row(provider):
 
 
 @pytest.mark.asyncio
-async def test_filters_by_tenant_org_active_status_and_current_period(provider):
+async def test_filters_by_tenant_org_live_status_and_current_period(provider):
     provider.collection.docs = [_usage_doc()]
     await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
     filt = provider.collection.last_filter
     assert filt["TenantId"] == "t1"
     assert filt["OrganizationId"] == "default"
-    # The literal is the point: it pins the wire value blocks-utilities writes for Active.
+    # The literals are the point: they pin the wire values blocks-utilities writes for Active and Trialing.
     # Deriving it from the enum here would make this test agree with any mapping, including a
     # wrong one -- which is exactly the drift that made every active row invisible.
-    assert filt["SubscriptionStatus"] == 3
+    assert filt["$or"] == [
+        {"SubscriptionStatus": 3},
+        {"SubscriptionStatus": 2, "CurrentPeriodEndUtc": {"$gt": filt["$or"][1]["CurrentPeriodEndUtc"]["$gt"]}},
+    ]
     assert "$lte" in filt["PeriodStartUtc"]
     assert "$gt" in filt["PeriodEndUtc"]
 
@@ -231,8 +240,8 @@ async def test_cancelled_subscription_row_is_excluded(provider):
 
 
 @pytest.mark.asyncio
-async def test_only_active_is_fetched_trialing_and_past_due_are_excluded(provider):
-    # Active-only by design: 2=Trialing, 4=PastDue, 5=Unpaid are all skipped.
+async def test_active_and_trialing_are_fetched_past_due_and_unpaid_are_excluded(provider):
+    # Live means 3=Active and 2=Trialing; 4=PastDue and 5=Unpaid are skipped.
     provider.collection.docs = [
         _usage_doc(meter_key="trialing", status=2),
         _usage_doc(meter_key="past-due", status=4),
@@ -240,7 +249,26 @@ async def test_only_active_is_fetched_trialing_and_past_due_are_excluded(provide
         _usage_doc(meter_key="active", status=3),
     ]
     result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
-    assert [r.meter_key for r in result] == ["active"]
+    assert sorted(r.meter_key for r in result) == ["active", "trialing"]
+
+
+@pytest.mark.asyncio
+async def test_trialing_row_is_excluded_once_the_trial_has_ended(provider):
+    # The usage window outlasts the trial, so the trial's own end must cut the row off.
+    trial_over = _usage_doc(meter_key="trial-over", status=2)
+    trial_over["CurrentPeriodEndUtc"] = datetime.now(timezone.utc) - timedelta(hours=1)
+    provider.collection.docs = [trial_over, _usage_doc(meter_key="trial-live", status=2)]
+    result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
+    assert [r.meter_key for r in result] == ["trial-live"]
+
+
+@pytest.mark.asyncio
+async def test_active_row_is_not_cut_off_by_a_late_renewal(provider):
+    late = _usage_doc(meter_key="late-renewal", status=3)
+    late["CurrentPeriodEndUtc"] = datetime.now(timezone.utc) - timedelta(hours=1)
+    provider.collection.docs = [late]
+    result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
+    assert [r.meter_key for r in result] == ["late-renewal"]
 
 
 @pytest.mark.asyncio
