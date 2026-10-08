@@ -32,13 +32,27 @@ class _FakeCollection:
 
     @staticmethod
     def _matches(doc, filt):
+        # An unknown operator raises rather than passing: a fake that quietly ignores part
+        # of a filter reports a query as working when the real collection would not.
         for key, value in filt.items():
+            if key == "$or":
+                if not any(_FakeCollection._matches(doc, branch) for branch in value):
+                    return False
+                continue
             actual = doc.get(key)
             if isinstance(value, dict):
-                if "$lte" in value and not (actual is not None and actual <= value["$lte"]):
-                    return False
-                if "$gt" in value and not (actual is not None and actual > value["$gt"]):
-                    return False
+                for operator, expected in value.items():
+                    if operator == "$lte":
+                        if actual is None or actual > expected:
+                            return False
+                    elif operator == "$gt":
+                        if actual is None or actual <= expected:
+                            return False
+                    elif operator == "$in":
+                        if actual not in expected:
+                            return False
+                    else:
+                        raise AssertionError(f"fake collection cannot match {operator}")
             elif actual != value:
                 return False
         return True
@@ -55,10 +69,12 @@ class _FakeProvider:
         return self.collection
 
 
-def _row(meter_key, used, included, remaining, overage, *, status=3, org="default", tenant="t1"):
+def _row(meter_key, used, included, remaining, overage, *, status=3, org="default", tenant="t1",
+         user=None):
     now = datetime.now(timezone.utc)
     return {
-        "_id": f"sub-1:{meter_key}:M20260902T024500Z",
+        "_id": f"sub-1:{meter_key}:M20260902T024500Z" + (f":{user}" if user else ""),
+        "UserId": user,
         "TenantId": tenant,
         "OrganizationId": org,
         "SubscriptionStatus": status,
@@ -139,7 +155,7 @@ def test_a_real_request_carries_the_snapshot_from_dependency_to_handler():
     assert provider.requested == [("SubscriptionUsageCurrent", "t1")]
     assert collection.last_filter["TenantId"] == "t1"
     assert collection.last_filter["OrganizationId"] == "default"
-    assert collection.last_filter["SubscriptionStatus"] == 3
+    assert [b["SubscriptionStatus"] for b in collection.last_filter["$or"]] == [3, 2]
 
 
 def test_a_real_request_with_no_matching_row_reports_an_empty_snapshot():
@@ -179,3 +195,18 @@ def test_the_snapshot_does_not_leak_between_two_requests():
     collection.docs = []
     second = _call(app, context).json()
     assert second["snapshot"] == []
+
+
+def test_a_real_request_reads_the_organizations_rows_and_not_a_members():
+    # A member's row sits under the same OrganizationId and would otherwise arrive beside
+    # the organization's own, leaving the handler two rows for one meter.
+    app, provider, collection, context = _build_app([
+        _row("ai-credits", used="7.5", included="550.55", remaining="543.05", overage="0"),
+        _row("ai-credits", used="1", included="10", remaining="9", overage="0", user="u1"),
+    ])
+    _CURRENT_PROVIDER[0] = provider
+
+    body = _call(app, context).json()
+
+    assert [r["used"] for r in body["snapshot"]] == [7.5]
+    assert collection.last_filter["UserId"] == {"$in": [None, ""]}

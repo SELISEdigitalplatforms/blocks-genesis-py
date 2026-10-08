@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from blocks_genesis._subscription.usage_service import SubscriptionUsageService
+from blocks_genesis._subscription.enums import SubLimitBehaviour, UsageWindow
 from blocks_genesis._subscription.models import UsageResult
 
 REPO = "blocks_genesis._subscription.repository."
@@ -42,7 +43,12 @@ def _matches_condition(actual, condition):
 
 
 def _matches(doc, filt):
-    return all(_matches_condition(doc.get(key), condition) for key, condition in filt.items())
+    return all(
+        any(_matches(doc, branch) for branch in condition)
+        if key == "$or"
+        else _matches_condition(doc.get(key), condition)
+        for key, condition in filt.items()
+    )
 
 
 class _FakeProvider:
@@ -69,10 +75,16 @@ def _usage_doc(
     remaining=0,
     overage=300,
     overage_allowed=True,
+    user_id=None,
+    scale=0,
 ):
     now = datetime.now(timezone.utc)
+    doc_id = f"sub-1:{meter_key}:M20260902T024500Z"
+    if user_id:
+        doc_id = f"{doc_id}:{user_id}"
     return {
-        "_id": f"sub-1:{meter_key}:M20260902T024500Z",
+        "_id": doc_id,
+        "UserId": user_id,
         "TenantId": tenant_id,
         "OrganizationId": organization_id,
         "SubscriptionId": "sub-1",
@@ -82,6 +94,8 @@ def _usage_doc(
         "PeriodKey": "M20260902T024500Z",
         "PeriodStartUtc": now - timedelta(days=1),
         "PeriodEndUtc": now + timedelta(days=29),
+        "CurrentPeriodEndUtc": now + timedelta(days=7),
+        "QuantityScale": scale,
         "Included": included,
         "Used": used,
         "Remaining": remaining,
@@ -124,6 +138,40 @@ async def test_over_allowance_without_overage_is_not_allowed(provider):
 
 
 @pytest.mark.asyncio
+async def test_allowance_used_up_without_overage_is_not_allowed(provider):
+    provider.collection.docs = [_usage_doc(used=500, included=500, remaining=0, overage=0, overage_allowed=False)]
+    result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
+    assert result[0].allowed is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "used, included, scale, allowed",
+    [
+        (499.9999999, 500, 2, False),  # rounds to 500.00, so spent
+        (499.99, 500, 2, True),  # a whole cent is still left
+        (500.004, 500, 2, False),
+        (499.5, 500, 0, True),  # whole-number meter compares as is
+        (499, 500, 0, True),
+        (500, 500, 0, False),
+    ],
+)
+async def test_room_is_compared_at_the_meters_precision(provider, used, included, scale, allowed):
+    provider.collection.docs = [
+        _usage_doc(used=used, included=included, remaining=0, overage=0, overage_allowed=False, scale=scale)
+    ]
+    result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
+    assert result[0].allowed is allowed
+
+
+@pytest.mark.asyncio
+async def test_allowance_used_up_with_overage_is_allowed(provider):
+    provider.collection.docs = [_usage_doc(used=500, included=500, remaining=0, overage=0, overage_allowed=True)]
+    result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
+    assert result[0].allowed is True
+
+
+@pytest.mark.asyncio
 async def test_within_allowance_is_allowed(provider):
     provider.collection.docs = [_usage_doc(used=100, included=500, remaining=400, overage=0, overage_allowed=False)]
     result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
@@ -132,16 +180,54 @@ async def test_within_allowance_is_allowed(provider):
 
 
 @pytest.mark.asyncio
-async def test_filters_by_tenant_org_active_status_and_current_period(provider):
+async def test_the_overage_flag_is_carried_so_a_caller_can_cap_a_charge(provider):
+    provider.collection.docs = [
+        _usage_doc(meter_key="capped", overage_allowed=False),
+        _usage_doc(meter_key="open", overage_allowed=True),
+    ]
+    result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
+    flags = {row.meter_key: row.overage_allowed for row in result}
+    assert flags == {"capped": False, "open": True}
+
+
+@pytest.mark.asyncio
+async def test_pace_limits_are_read_off_the_row(provider):
+    """2000 credits a month, 100 a day, 60 spent today."""
+    start = datetime(2026, 9, 29, tzinfo=timezone.utc)
+    doc = _usage_doc(meter_key="ai-credits")
+    doc["SubLimits"] = [
+        {
+            "Window": 1, "WindowCount": 1, "Rolling": False, "Behaviour": 0,
+            "Quantity": 100, "Used": 60, "Remaining": 40, "Exceeded": False,
+            "WindowStartUtc": start, "WindowEndUtc": start + timedelta(days=1),
+        }
+    ]
+    provider.collection.docs = [doc, _usage_doc(meter_key="no-pace")]
+
+    result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
+    by_key = {row.meter_key: row for row in result}
+
+    [day] = by_key["ai-credits"].sub_limits
+    assert (day.window, day.behaviour) == (UsageWindow.DAY, SubLimitBehaviour.REFUSE)
+    assert (day.quantity, day.used, day.remaining, day.exceeded) == (100, 60, 40, False)
+    assert day.window_end_utc == start + timedelta(days=1)
+    assert by_key["no-pace"].sub_limits == []
+
+
+@pytest.mark.asyncio
+async def test_filters_by_tenant_org_live_status_and_current_period(provider):
     provider.collection.docs = [_usage_doc()]
     await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
     filt = provider.collection.last_filter
     assert filt["TenantId"] == "t1"
     assert filt["OrganizationId"] == "default"
-    # The literal is the point: it pins the wire value blocks-utilities writes for Active.
+    # The literals are the point: they pin the wire values blocks-utilities writes for Active and Trialing.
     # Deriving it from the enum here would make this test agree with any mapping, including a
     # wrong one -- which is exactly the drift that made every active row invisible.
-    assert filt["SubscriptionStatus"] == 3
+    assert filt["$or"] == [
+        {"SubscriptionStatus": 3},
+        {"SubscriptionStatus": 2, "CurrentPeriodEndUtc": {"$gt": filt["$or"][1]["CurrentPeriodEndUtc"]["$gt"]}},
+    ]
     assert "$lte" in filt["PeriodStartUtc"]
     assert "$gt" in filt["PeriodEndUtc"]
 
@@ -154,8 +240,8 @@ async def test_cancelled_subscription_row_is_excluded(provider):
 
 
 @pytest.mark.asyncio
-async def test_only_active_is_fetched_trialing_and_past_due_are_excluded(provider):
-    # Active-only by design: 2=Trialing, 4=PastDue, 5=Unpaid are all skipped.
+async def test_active_and_trialing_are_fetched_past_due_and_unpaid_are_excluded(provider):
+    # Live means 3=Active and 2=Trialing; 4=PastDue and 5=Unpaid are skipped.
     provider.collection.docs = [
         _usage_doc(meter_key="trialing", status=2),
         _usage_doc(meter_key="past-due", status=4),
@@ -163,7 +249,26 @@ async def test_only_active_is_fetched_trialing_and_past_due_are_excluded(provide
         _usage_doc(meter_key="active", status=3),
     ]
     result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
-    assert [r.meter_key for r in result] == ["active"]
+    assert sorted(r.meter_key for r in result) == ["active", "trialing"]
+
+
+@pytest.mark.asyncio
+async def test_trialing_row_is_excluded_once_the_trial_has_ended(provider):
+    # The usage window outlasts the trial, so the trial's own end must cut the row off.
+    trial_over = _usage_doc(meter_key="trial-over", status=2)
+    trial_over["CurrentPeriodEndUtc"] = datetime.now(timezone.utc) - timedelta(hours=1)
+    provider.collection.docs = [trial_over, _usage_doc(meter_key="trial-live", status=2)]
+    result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
+    assert [r.meter_key for r in result] == ["trial-live"]
+
+
+@pytest.mark.asyncio
+async def test_active_row_is_not_cut_off_by_a_late_renewal(provider):
+    late = _usage_doc(meter_key="late-renewal", status=3)
+    late["CurrentPeriodEndUtc"] = datetime.now(timezone.utc) - timedelta(hours=1)
+    provider.collection.docs = [late]
+    result = await SubscriptionUsageService.get_usage_current(tenant_id="t1", organization_id="default")
+    assert [r.meter_key for r in result] == ["late-renewal"]
 
 
 @pytest.mark.asyncio
@@ -311,3 +416,84 @@ def test_the_scale_is_clamped_to_the_api_maximum():
     assert MAX_QUANTITY_SCALE == 6
     assert _to_result({"MeterKey": "m", "QuantityScale": 9}).quantity_scale == 6
     assert _to_result({"MeterKey": "m", "QuantityScale": -2}).quantity_scale == 0
+
+
+# ---------------- whose rows: the organization's, or one member's ----------------
+
+
+@pytest.mark.asyncio
+async def test_the_organization_read_leaves_out_every_member_row(provider):
+    # The defect this scope split fixes: both kinds sit under the same OrganizationId, so
+    # an unscoped read handed the caller one organization row and one row per member, all
+    # for the same meter.
+    provider.collection.docs = [
+        _usage_doc(meter_key="ai-credits", used=10, remaining=90),
+        _usage_doc(meter_key="ai-credits", used=7, remaining=93, user_id="u1"),
+        _usage_doc(meter_key="ai-credits", used=3, remaining=97, user_id="u2"),
+    ]
+    result = await SubscriptionUsageService.get_usage_current(
+        tenant_id="t1", organization_id="default"
+    )
+    assert len(result) == 1
+    assert result[0].used == pytest.approx(10)
+
+
+@pytest.mark.asyncio
+async def test_a_row_written_before_the_user_field_existed_is_still_the_organizations(provider):
+    doc = _usage_doc()
+    del doc["UserId"]
+    provider.collection.docs = [doc]
+    result = await SubscriptionUsageService.get_usage_current(
+        tenant_id="t1", organization_id="default"
+    )
+    assert len(result) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_member_read_returns_only_that_members_rows(provider):
+    provider.collection.docs = [
+        _usage_doc(meter_key="ai-credits", used=10, remaining=90),
+        _usage_doc(meter_key="ai-credits", used=7, remaining=93, user_id="u1"),
+        _usage_doc(meter_key="ai-credits", used=3, remaining=97, user_id="u2"),
+    ]
+    result = await SubscriptionUsageService.get_usage_current(
+        tenant_id="t1", organization_id="default", user_id="u1"
+    )
+    assert len(result) == 1
+    assert result[0].used == pytest.approx(7)
+    assert provider.collection.last_filter["UserId"] == "u1"
+
+
+@pytest.mark.asyncio
+async def test_a_member_with_no_rows_of_their_own_reads_empty_not_the_organizations(provider):
+    provider.collection.docs = [_usage_doc(meter_key="ai-credits")]
+    result = await SubscriptionUsageService.get_usage_current(
+        tenant_id="t1", organization_id="default", user_id="u1"
+    )
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_an_empty_user_id_reads_the_organization(provider):
+    provider.collection.docs = [_usage_doc(), _usage_doc(user_id="u1")]
+    result = await SubscriptionUsageService.get_usage_current(
+        tenant_id="t1", organization_id="default", user_id=""
+    )
+    assert len(result) == 1
+    assert provider.collection.last_filter["UserId"] == {"$in": [None, ""]}
+
+
+@pytest.mark.asyncio
+async def test_an_organization_row_storing_an_empty_user_id_is_still_read(provider):
+    """What the live collection actually holds. Matching only on null returned nothing,
+    which reads as no live subscription and refuses the whole organization."""
+    doc = _usage_doc()
+    doc["UserId"] = ""
+    provider.collection.docs = [doc, _usage_doc(user_id="u1")]
+
+    result = await SubscriptionUsageService.get_usage_current(
+        tenant_id="t1", organization_id="default"
+    )
+
+    assert len(result) == 1
+    assert result[0].used == pytest.approx(800)

@@ -31,7 +31,7 @@ from blocks_genesis._delegation.context import AuthClaimsContext
 from blocks_genesis._database.db_context import DbContext
 from blocks_genesis._lmt.activity import Activity
 from blocks_genesis._subscription.context import SubscriptionUsageContext
-from blocks_genesis._subscription.models import UsageResult
+from blocks_genesis._subscription.models import UsageResult, UsageSnapshot
 from blocks_genesis._subscription.usage_service import SubscriptionUsageService
 from blocks_genesis._tenant.tenant import Tenant
 from blocks_genesis._tenant.tenant_service import TenantService
@@ -1415,6 +1415,60 @@ async def resolve_subscription_usage(
         snapshot = None
 
     SubscriptionUsageContext.set(snapshot)
+    return snapshot
+
+
+async def resolve_subscription_usage_snapshot(
+    *,
+    tenant_id: Optional[str] = None,
+    organization_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> Optional[UsageSnapshot]:
+    """The organization's balances and the signed-in member's own, in one read.
+
+    The sibling of `resolve_subscription_usage`. Context ids win for the tenant and the
+    organization, the same as there.
+
+    The member defaults to whoever the token signed in -- the user id on an authenticated
+    context -- so a caller with a valid token gets its own member's balance without asking.
+    `user_id` overrides it, and the difference between its two empty values matters:
+
+    - `None`, the default: not said, so the signed-in user is the member
+    - `""`: deliberately no member
+
+    Pass `""` for a caller whose token carries a user id who does not answer for their own
+    share -- a widget visitor, or anything billed on a client credential. Only the caller
+    knows that; the context does not.
+
+    Both sides come back from a single query. `SubscriptionUsageContext` is set to the
+    organization's rows, as `resolve_subscription_usage` sets it, so everything that reads
+    the context sees what it always has. Never raises -- missing ids leave the snapshot
+    None, and a failed read is None on each side inside it.
+    """
+    context = BlocksContextManager.get_context()
+    if context is not None:
+        tenant_id = context.tenant_id or tenant_id
+        organization_id = context.organization_id or organization_id
+        if user_id is None and context.is_authenticated:
+            user_id = context.user_id or None
+
+    if not tenant_id or not organization_id:
+        SubscriptionUsageContext.set(None)
+        return None
+
+    try:
+        snapshot = await SubscriptionUsageService.get_usage_snapshot(
+            tenant_id=tenant_id,
+            organization_id=organization_id,
+            user_id=user_id or None,
+            entitlements=False,
+        )
+    except Exception:
+        _logger.exception("Usage lookup failed; snapshot left None.")
+        SubscriptionUsageContext.set(None)
+        return None
+
+    SubscriptionUsageContext.set(snapshot.organization)
     return snapshot
 
 
