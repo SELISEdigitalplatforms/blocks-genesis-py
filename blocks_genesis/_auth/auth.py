@@ -1232,10 +1232,10 @@ async def _check_quota(
     """
     Check if user is within rate limit quota for resource.
     
-    Returns False if limit exceeded (429), True otherwise.
+    Returns False once Usage has reached Limit. Allows the call when no limit is
+    configured for the resource, or when the limit cannot be read.
     """
     try:
-        return True  # Quota check is currently disabled, always allow access. Implement actual logic as needed.
         collection = await db_context.get_collection("ResourceLimits", tenant_id=context.tenant_id)
         
         resource_limit = await collection.find_one({"Resource": resource_name})
@@ -1267,7 +1267,8 @@ async def _check_permission(
     Check if user has permission to access resource.
     
     Checks both role-based and permission-based access.
-    Returns True if user has any matching role or permission.
+    A permission counts only if it names this resource; a role counts only if it
+    is granted on this resource.
     """
     try:
         # Determine tenant_id from context, handling impersonation
@@ -1295,11 +1296,16 @@ async def _check_permission(
 
         # AND: OrganizationId == organization_id
         # OR:
-        #   - Resource in permissions
+        #   - (Resource == resource_name AND Resource in permissions)
         #   - (Resource == resource_name AND Roles in roles)
         or_conditions = []
         if permissions:
-            or_conditions.append({"Resource": {"$in": permissions}})
+            or_conditions.append({
+                "$and": [
+                    {"Resource": resource_name},
+                    {"Resource": {"$in": permissions}}
+                ]
+            })
         if roles:
             or_conditions.append({
                 "$and": [
