@@ -17,6 +17,21 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref }}
+          fetch-depth: 0
+
+      # 0.3.6 to 0.3.8 were cut from a branch without main, so main's delegation checks never shipped.
+      - name: Refuse a release that does not contain main
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor origin/main HEAD || {
+            echo "::error::The release commit does not contain origin/main. Merge main into it first."; exit 1; }
+
+      - name: Refuse a tag that does not match the package version
+        run: |
+          version=$(grep -m1 '^version' pyproject.toml | cut -d '"' -f2)
+          if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match pyproject.toml version ${version}."; exit 1
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5

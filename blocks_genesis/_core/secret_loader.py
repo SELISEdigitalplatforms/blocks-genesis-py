@@ -8,6 +8,8 @@ logger = logging.getLogger(__name__)
 # Module-level private variable to hold the immutable singleton secret
 _loaded_secret: Optional[BlocksSecret] = None
 
+REQUIRED_SECRETS = ("CacheConnectionString", "DatabaseConnectionString", "RootDatabaseName")
+
 class SecretLoader:
     def __init__(self, service_name: str = "blocks_service"):
         self.vault = AzureKeyVault()
@@ -23,6 +25,13 @@ class SecretLoader:
         try:
             logger.info("Loading secrets from Azure Key Vault...")
             raw_secrets: Dict[str, str] = await self.vault.get_secrets(fields)
+
+            missing = [
+                name for name in REQUIRED_SECRETS
+                if name in fields and not str(raw_secrets.get(name) or "").strip()
+            ]
+            if missing:
+                raise RuntimeError(f"Missing required secrets: {', '.join(missing)}")
 
             processed_secrets: Dict[str, object] = {
                 key: (

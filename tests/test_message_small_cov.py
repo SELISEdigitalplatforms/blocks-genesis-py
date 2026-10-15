@@ -36,10 +36,34 @@ async def test_consumer_not_callable_no_handle():
 
 
 @pytest.mark.asyncio
+async def test_consumer_class_handler_is_instantiated_and_handle_called():
+    seen = {'constructed': [], 'data': []}
+
+    class Handler:
+        def __init__(self, *args, **kwargs):
+            seen['constructed'].append((args, kwargs))
+
+        async def handle(self, data):
+            seen['data'].append(data)
+
+    with patch(RESOLVE, return_value=Handler):
+        await Consumer().process_message('t', '{"a": 1}')
+    assert seen['constructed'] == [((), {})]
+    assert seen['data'] == [{'a': 1}]
+
+
+@pytest.mark.asyncio
+async def test_consumer_class_without_handle_raises_type_error():
+    class NoHandle:
+        pass
+    with patch(RESOLVE, return_value=NoHandle):
+        with pytest.raises(TypeError):
+            await Consumer().process_message('t', '{"a": 1}')
+
+
+@pytest.mark.asyncio
 async def test_consumer_non_callable_with_handle_raises():
-    # Characterization of current behavior: a non-callable object that has a
-    # `handle` attribute enters the elif and then fails at `handler()` because
-    # it is not callable. (Latent bug flagged for the user.)
+    # Intended: handler instances are not supported, register the class instead.
     class WithHandle:
         async def handle(self, data):
             pass

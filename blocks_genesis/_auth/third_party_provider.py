@@ -75,9 +75,10 @@ class ThirdPartyJwtProvider(BaseEntity):
     # the provider rotating one.
     jwks_url: str = Field(alias="JwksUrl", default="")
 
-    # The other asymmetric key source: a single public certificate, addressed either as
-    # an absolute URL or as a path on the host's filesystem. A provider configures
-    # exactly one -- holding both would give it two independent signing authorities.
+    # The other asymmetric key source: a single public certificate, addressed as an
+    # absolute https URL on a public host. File paths are refused for providers. A
+    # provider configures exactly one -- holding both would give it two independent
+    # signing authorities.
     public_certificate_path: str = Field(alias="PublicCertificatePath", default="")
 
     # Passphrase for a PKCS#12 certificate, encrypted under the tenant salt. Empty is
@@ -92,8 +93,9 @@ class ThirdPartyJwtProvider(BaseEntity):
     # Descriptive only. Nothing routes or validates on these three.
     certificate_subject: str = Field(alias="CertificateSubject", default="")
     certificate_thumbprint: str = Field(alias="CertificateThumbprint", default="")
-    # Not consulted during validation: the certificate's own expiry is what is enforced,
-    # read from the file. This copy is a stale snapshot for display.
+    # Not consulted during validation: the certificate's own not-before/not-after dates
+    # are checked when the certificate is loaded (`auth.certificate_validity_error`).
+    # This copy is a stale snapshot for display.
     certificate_not_after: Optional[datetime] = Field(alias="CertificateNotAfter", default=None)
 
     # Stored for parity. Deliberately not read: genesis-net's cookie path still reads the
