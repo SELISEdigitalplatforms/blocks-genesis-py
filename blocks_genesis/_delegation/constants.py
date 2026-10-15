@@ -35,6 +35,9 @@ CLOCK_WINDOW_SECONDS = 60
 # How long before a token's expiry a cached entry stops being served, in seconds.
 TOKEN_RENEWAL_MARGIN_SECONDS = 60
 
+# How long a discovered token endpoint is reused before discovery runs again, in seconds.
+DISCOVERY_CACHE_SECONDS = 3600
+
 BLOCKS_KEY_HEADER = "x-blocks-key"
 
 # Claims carrying the version material. Not on BlocksContext; read from the validated token.
