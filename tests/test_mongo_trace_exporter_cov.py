@@ -13,6 +13,7 @@ def _exp():
     e._service_name = 'svc'; e._db = MagicMock()
     e._queue = Queue(maxsize=100); e._batch_size = 1000; e._flush_interval = 0.01
     e._client = MagicMock(); e._stop_event = MagicMock(); e._worker_thread = MagicMock()
+    e._ensured_collections = set(); e._db.list_collections.return_value = []
     return e
 
 
@@ -98,6 +99,7 @@ def test_flush_to_mongo_error():
     e = _exp(); coll = MagicMock(); coll.insert_many.side_effect = errors.PyMongoError('x')
     e._db.__getitem__.return_value = coll
     e._flush_to_mongo({'tid': [{'d': 1}]})
+    coll.insert_many.assert_called_once()
 
 
 def test_flush_remaining_with_docs():

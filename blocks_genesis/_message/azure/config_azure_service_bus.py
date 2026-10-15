@@ -1,7 +1,10 @@
+import logging
 from typing import Optional
 from datetime import timedelta
 from azure.servicebus.management import ServiceBusAdministrationClient
 from blocks_genesis._message.message_configuration import MessageConfiguration
+
+logger = logging.getLogger(__name__)
 
 
 class ConfigAzureServiceBus:
@@ -20,7 +23,8 @@ class ConfigAzureServiceBus:
             cls._create_topics_and_subscriptions()
 
         except Exception as ex:
-            print(f"Exception during Service Bus configuration: {ex}")
+            # Only the type: the message can name the namespace.
+            logger.debug("Exception during Service Bus configuration: %s", type(ex).__name__)
             raise
 
     @classmethod
@@ -30,7 +34,7 @@ class ConfigAzureServiceBus:
 
         for queue_name in queues:
             if cls._check_queue_exists(queue_name):
-                print(f"Queue '{queue_name}' already exists. Skipping creation.")
+                logger.debug("Queue '%s' already exists. Skipping creation.", queue_name)
                 continue
 
             cls._admin_client.create_queue(
@@ -40,7 +44,7 @@ class ConfigAzureServiceBus:
                 default_message_time_to_live=config.queue_default_message_time_to_live, 
                 lock_duration=timedelta(seconds=300),  # 5 minutes
             )
-            print(f"Queue created: {queue_name}")
+            logger.debug("Queue created: %s", queue_name)
 
     @classmethod
     def _check_queue_exists(cls, queue_name: str) -> bool:
@@ -57,14 +61,14 @@ class ConfigAzureServiceBus:
 
         for topic_name in topics:
             if cls._check_topic_exists(topic_name):
-                print(f"Topic '{topic_name}' already exists. Skipping creation.")
+                logger.debug("Topic '%s' already exists. Skipping creation.", topic_name)
             else:
                 cls._admin_client.create_topic(
                     topic_name,
                     max_size_in_megabytes=config.topic_max_size_in_megabytes,
                     default_message_time_to_live=config.topic_default_message_time_to_live,
                 )
-                print(f"Topic created: {topic_name}")
+                logger.debug("Topic created: %s", topic_name)
 
             cls._create_subscription(topic_name)
 
@@ -82,7 +86,7 @@ class ConfigAzureServiceBus:
         subscription_name = cls._message_config.get_subscription_name(topic_name)
 
         if cls._check_subscription_exists(topic_name, subscription_name):
-            print(f"Subscription '{subscription_name}' for topic '{topic_name}' already exists. Skipping.")
+            logger.debug("Subscription '%s' for topic '%s' already exists. Skipping.", subscription_name, topic_name)
             return
 
         cls._admin_client.create_subscription(
@@ -92,7 +96,7 @@ class ConfigAzureServiceBus:
             default_message_time_to_live=config.topic_subscription_default_message_time_to_live,
             lock_duration=timedelta(seconds=300),
         )
-        print(f"Subscription '{subscription_name}' created for topic '{topic_name}'")
+        logger.debug("Subscription '%s' created for topic '%s'", subscription_name, topic_name)
 
     @classmethod
     def _check_subscription_exists(cls, topic_name: str, subscription_name: str) -> bool:
