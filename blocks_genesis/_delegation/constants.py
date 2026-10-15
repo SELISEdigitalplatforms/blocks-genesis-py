@@ -23,6 +23,9 @@ DELEGATION_GRANT_TOKEN_TYPE = "urn:blocks:params:oauth:token-type:delegation-gra
 # Default absolute lifetime of a grant record, in seconds (2 days).
 DEFAULT_GRANT_TTL_SECONDS = 2 * 24 * 60 * 60
 
+# Longest lifetime a sender may request; a longer request is cut to this.
+MAX_GRANT_TTL_SECONDS = DEFAULT_GRANT_TTL_SECONDS
+
 # Nonce replay window, in seconds. At least twice the clock window.
 NONCE_TTL_SECONDS = 120
 
