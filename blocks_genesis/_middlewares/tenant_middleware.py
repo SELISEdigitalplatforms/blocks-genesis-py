@@ -8,35 +8,11 @@ from urllib.parse import urlparse
 from opentelemetry.trace import StatusCode
 from blocks_genesis._auth.blocks_context import BlocksContextManager
 from blocks_genesis._lmt.activity import Activity
+from blocks_genesis._middlewares.origin_policy import is_tenant_origin_host
 from blocks_genesis._tenant.tenant import Tenant
 from blocks_genesis._tenant.tenant_service import get_tenant_service
+from blocks_genesis._lmt.redaction import SENSITIVE_KEYS, is_sensitive_key, sanitize_dict  # noqa: F401 - re-exported
 import json
-SENSITIVE_KEYS = {
-    "authorization",
-    "cookie",
-    "set-cookie",
-    "secret",
-    "x-blocks-service-key",
-    "x-api-key",
-    "token",
-    "access_token",
-    "refresh_token",
-    "password",
-}
-
-def is_sensitive_key(key: str) -> bool:
-    if not key:
-        return False
-    key_lower = key.lower()
-    return (
-        key_lower in SENSITIVE_KEYS
-        or "token" in key_lower
-        or "secret" in key_lower
-        or "password" in key_lower
-    )
-
-def sanitize_dict(d: dict) -> dict:
-    return {k: ("[REDACTED]" if is_sensitive_key(k) else v) for k, v in d.items()}
 
 
 async def tee_body_iterator(
@@ -114,7 +90,6 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
                 impersonated=False
             )
             BlocksContextManager.set_context(ctx)
-            Activity.set_current_property("SecurityContext", str(ctx.__dict__))
 
             request_size = int(request.headers.get("content-length", 0))
 
@@ -215,27 +190,16 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
                 candidate = url if "://" in url else f"//{url}"
                 parsed = urlparse(candidate)
                 if parsed.hostname:
-                    return parsed.hostname.lower()
+                    host = parsed.hostname.lower()
+                    return host[:-1] if host.endswith(".") else host
             except Exception:
                 pass
             return BlocksContextManager.normalize_domain(url)
 
-        # Allowed domains are derived solely from the tenant's Applications array.
-        # (The legacy tenant.allowed_domains field was removed from the Tenant
-        # model to mirror the blocks-genesis-net Tenant structure.)
-        allowed = [
-            extract_domain(app.domain)
-            for app in (tenant.applications or [])
-            if app.domain
-        ]
-        
         current = (
             extract_domain(request.headers.get("origin") or "")
             or extract_domain(request.headers.get("referer") or "")
         )
 
-        return (
-            not current
-            or BlocksContextManager.is_localhost_host(current)
-            or current in allowed
-        )
+        # Allowed hosts are the tenant's application domains, plus localhost in a local deployment.
+        return not current or is_tenant_origin_host(current, tenant)

@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from blocks_genesis._core import api
 
@@ -89,7 +89,7 @@ def test_endpoints_no_docs(mock_instr):
     app = FastAPI()
     api.configure_genesis(app, show_docs=False)
     with TestClient(app) as client:
-        assert 'NOT_ALLOWED' in client.get('/swagger/index.html').text
+        assert client.get('/swagger/index.html').status_code == 404
 
 
 def _find_openapi_endpoint(app):
@@ -113,4 +113,6 @@ async def test_custom_openapi_endpoint_show_docs(mock_instr):
 async def test_custom_openapi_endpoint_no_docs(mock_instr):
     app = FastAPI()
     api.configure_genesis(app, show_docs=False)
-    assert await _find_openapi_endpoint(app)() == {}
+    with pytest.raises(HTTPException) as exc:
+        await _find_openapi_endpoint(app)()
+    assert exc.value.status_code == 404

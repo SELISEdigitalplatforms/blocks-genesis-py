@@ -80,7 +80,7 @@ def test_find_root_attributes_baggage():
 
 def test_find_root_attributes_no_baggage():
     span = MagicMock(); span.attributes = {'a': 1}
-    assert _act()._find_root_attributes(span) == {'a': 1}
+    assert _act()._find_root_attributes(span) == {}
 
 
 def test_get_root_attribute():
