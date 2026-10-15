@@ -144,7 +144,7 @@ def configure_genesis(app: FastAPI, show_docs: bool = False, serve_static: bool 
     async def get_documentation(request:Request):
         root_path = request.scope.get("root_path", None)
         openapi_url = f"{root_path}/openapi.json" if root_path else "/openapi.json"
-        print(openapi_url)
+        logger.debug("Serving the Swagger UI page")
         if show_docs:
             return get_swagger_ui_html(openapi_url=openapi_url, title="Swagger")
         else:

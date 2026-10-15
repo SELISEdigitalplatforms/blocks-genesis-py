@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import NameOID
+from starlette.datastructures import URL
 
 from blocks_genesis._auth import auth
 from blocks_genesis._auth.third_party_provider import ThirdPartyJwtProvider
@@ -99,7 +100,7 @@ def _provider(**kwargs):
 
 def _request(headers=None):
     request = MagicMock()
-    request.url = "https://api.klax.io/x"
+    request.url = URL("https://api.klax.io/x")
     request.headers = headers or {}
     request.query_params = {}
     return request
