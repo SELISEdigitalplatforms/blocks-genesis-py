@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from blocks_genesis._auth.blocks_context import BlocksContext
 from blocks_genesis._cache.cache_provider import CacheProvider
-from blocks_genesis._delegation.constants import DEFAULT_GRANT_TTL_SECONDS, grant_key
+from blocks_genesis._delegation.constants import DEFAULT_GRANT_TTL_SECONDS, MAX_GRANT_TTL_SECONDS, grant_key
 from blocks_genesis._delegation.signature import is_well_formed, new_grant_id
 
 logger = logging.getLogger(__name__)
@@ -128,6 +128,9 @@ class DelegationGrantStore:
     async def _write_async(self, record: DelegationGrantRecord, ttl_seconds: Optional[int]) -> str:
         delegation_id = new_grant_id()
         lifetime = ttl_seconds if ttl_seconds and ttl_seconds > 0 else DEFAULT_GRANT_TTL_SECONDS
+        if lifetime > MAX_GRANT_TTL_SECONDS:
+            logger.debug("Requested grant lifetime of %ss capped to %ss", lifetime, MAX_GRANT_TTL_SECONDS)
+            lifetime = MAX_GRANT_TTL_SECONDS
 
         # setex writes value and TTL in one command, so a grant can never exist without an expiry.
         await self._cache.add_string_value_async(grant_key(delegation_id), record.to_wire_json(), lifetime)
@@ -138,7 +141,8 @@ class DelegationGrantStore:
         return delegation_id
 
     async def delete_async(self, delegation_id: Optional[str]) -> None:
-        """Best-effort removal after a successful settle. Never called before the ACK."""
+        """Best-effort removal after a successful settle (never before the ACK), or by the sender
+        when its message was not delivered."""
         if not is_well_formed(delegation_id):
             return
 

@@ -219,6 +219,10 @@ await MessageClient.get_instance().send_to_consumer_async(
 )
 ```
 
+A grant lives at most two days (a longer `delegation_ttl_seconds` is cut to two days), and a grant
+whose message was not delivered, because the send failed or RabbitMQ returned it as unroutable, is
+deleted at once.
+
 ### Using the token is explicit, per call
 
 ```python
