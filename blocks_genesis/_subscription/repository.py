@@ -1,6 +1,10 @@
 """Reads the subscription read models: SubscriptionUsageCurrent (a balance per meter) and
 SubscriptionEntitlementsCurrent (what the plan behind those balances grants).
+
+The collections are synchronous PyMongo, so each read, cursor walk included, runs on a
+worker thread. On the event loop it would stall every request while the database answers.
 """
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
@@ -60,15 +64,15 @@ async def get_current_usage_docs(
     """
     collection = await _collection(_USAGE_CURRENT, tenant_id)
     now = datetime.now(timezone.utc)
-    cursor = collection.find({
+    query = {
         "TenantId": tenant_id,
         "OrganizationId": organization_id,
         "UserId": user_id if user_id else {"$in": [None, ""]},
         **_live_status(now),
         "PeriodStartUtc": {"$lte": now},
         "PeriodEndUtc": {"$gt": now},
-    }, sort=_NEWEST_FIRST)
-    return list(cursor)
+    }
+    return await asyncio.to_thread(lambda: list(collection.find(query, sort=_NEWEST_FIRST)))
 
 
 async def get_scoped_usage_docs(
@@ -93,15 +97,15 @@ async def get_scoped_usage_docs(
     owners.extend(u for u in user_ids if u)
     if not owners:
         return []
-    cursor = collection.find({
+    query = {
         "TenantId": tenant_id,
         "OrganizationId": organization_id,
         "UserId": {"$in": owners},
         **_live_status(now),
         "PeriodStartUtc": {"$lte": now},
         "PeriodEndUtc": {"$gt": now},
-    }, sort=_NEWEST_FIRST)
-    return list(cursor)
+    }
+    return await asyncio.to_thread(lambda: list(collection.find(query, sort=_NEWEST_FIRST)))
 
 
 async def get_current_entitlement_docs(
@@ -114,9 +118,11 @@ async def get_current_entitlement_docs(
     but a plan change publishes the new one before the old is retired.
     """
     collection = await _collection(_ENTITLEMENTS_CURRENT, tenant_id)
-    cursor = collection.find({
+    query = {
         "TenantId": tenant_id,
         "OrganizationId": organization_id,
         **_live_status(datetime.now(timezone.utc)),
-    }).sort("SubscriptionVersion", -1)
-    return list(cursor)
+    }
+    return await asyncio.to_thread(
+        lambda: list(collection.find(query).sort("SubscriptionVersion", -1))
+    )
