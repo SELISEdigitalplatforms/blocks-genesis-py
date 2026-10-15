@@ -569,7 +569,7 @@ def test_authorize_missing_resource_raises():
 @patch(AU + 'BlocksContextManager')
 @patch(AU + 'DbContext')
 @patch(AU + 'CacheProvider')
-@patch(AU + 'TenantService')
+@patch(AU + 'get_tenant_service')
 async def test_authorize_dependency_success(mock_ts, mock_cp, mock_db, mock_bcm, mock_auth, mock_csa):
     dep = auth.authorize('res')
     ctx = MagicMock(); mock_bcm.get_context.return_value = ctx
@@ -582,7 +582,7 @@ async def test_authorize_dependency_success(mock_ts, mock_cp, mock_db, mock_bcm,
 @patch(AU + 'BlocksContextManager')
 @patch(AU + 'DbContext')
 @patch(AU + 'CacheProvider')
-@patch(AU + 'TenantService')
+@patch(AU + 'get_tenant_service')
 async def test_authorize_dependency_no_context(mock_ts, mock_cp, mock_db, mock_bcm, mock_auth):
     dep = auth.authorize('res')
     mock_bcm.get_context.return_value = None
@@ -595,7 +595,7 @@ async def test_authorize_dependency_no_context(mock_ts, mock_cp, mock_db, mock_b
 @patch(AU + 'BlocksContextManager')
 @patch(AU + 'DbContext')
 @patch(AU + 'CacheProvider')
-@patch(AU + 'TenantService')
+@patch(AU + 'get_tenant_service')
 async def test_authorize_dependency_bypass(mock_ts, mock_cp, mock_db, mock_bcm, mock_auth):
     dep = auth.authorize(bypass_authorization=True)
     ctx = MagicMock(); mock_bcm.get_context.return_value = ctx
@@ -608,7 +608,7 @@ async def test_authorize_dependency_bypass(mock_ts, mock_cp, mock_db, mock_bcm, 
 @patch(AU + 'BlocksContextManager')
 @patch(AU + 'DbContext')
 @patch(AU + 'CacheProvider')
-@patch(AU + 'TenantService')
+@patch(AU + 'get_tenant_service')
 async def test_authorize_dependency_no_access(mock_ts, mock_cp, mock_db, mock_bcm, mock_auth, mock_csa):
     dep = auth.authorize('res')
     ctx = MagicMock(); mock_bcm.get_context.return_value = ctx
