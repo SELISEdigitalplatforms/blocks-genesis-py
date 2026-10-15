@@ -42,6 +42,17 @@ def empty_certificate_cache():
 
 
 @pytest.fixture(autouse=True)
+def forget_provider_warnings():
+    """Provider configuration warnings are logged once per process, so one test's warning
+    must not silence another's."""
+    from blocks_genesis._auth import auth
+
+    auth._provider_warnings_logged.clear()
+    yield
+    auth._provider_warnings_logged.clear()
+
+
+@pytest.fixture(autouse=True)
 def available_message_tenant(monkeypatch):
     """Workers look up the message's tenant; by default it exists and is enabled."""
     from unittest.mock import AsyncMock, MagicMock

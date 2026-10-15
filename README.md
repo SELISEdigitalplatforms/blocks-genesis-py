@@ -359,6 +359,12 @@ Token signing keys and certificates are downloaded under these rules:
 - A JWKS is cached for 10 minutes per URL. A token with an unknown key id refreshes it at most once a minute. If a refresh fails, the last good keys are used for at most 1 hour past the 10 minutes.
 - A certificate outside its validity dates is rejected. Certificates are cached in each process's memory for at most 1 hour, and never past their expiry; they are never read from or written to Redis.
 
+### Third-party tokens
+
+- A token from a tenant's own identity provider must carry `exp`. Up to 5 minutes of clock difference is allowed, as in blocks-genesis-net.
+- Claims Genesis sets itself are removed from a provider's token before anything reads it: tenant, user, organization, roles, permissions, impersonation, client, session, phone, `oauth`, `request_uri`, `token_version` and `security_stamp`. A message sent for a third-party caller therefore carries no delegation grant built from the provider's values.
+- A provider with no `Issuer`, no `Audiences`, or still on the `default` organization is accepted, as in blocks-genesis-net, and a `[Security]` warning names it once per process.
+
 ### Secrets (Azure Key Vault)
 
 At startup, the secret loader fetches the fields of the `BlocksSecret` model from Azure Key Vault. Two things must be in place:

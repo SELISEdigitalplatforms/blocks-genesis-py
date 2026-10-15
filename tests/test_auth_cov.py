@@ -241,7 +241,8 @@ async def test_authenticate_third_party_success(mock_extract, mock_vwf, mock_bcm
     mock_bcm.strip_reserved_claims.side_effect = lambda claims: dict(claims)
     mock_bcm.create_third_party_context.return_value = MagicMock(user_id='u1_external', tenant_id='tid')
     ts = MagicMock(); ts.get_tenant = AsyncMock(return_value=MagicMock())
-    assert await auth.authenticate(MagicMock(), ts, cache_client=MagicMock()) == {'sub': 'u1'}
+    req = MagicMock()
+    assert await auth.authenticate(req, ts, cache_client=MagicMock()) == {'sub': 'u1', 'request_uri': str(req.url.path)}
     mock_bcm.create_from_jwt_claims.assert_not_called()
 
 
@@ -294,7 +295,8 @@ async def test_authenticate_primary_fails_fallback_success(mock_extract, mock_vj
     mock_bcm.strip_reserved_claims.side_effect = lambda claims: dict(claims)
     mock_bcm.create_third_party_context.return_value = MagicMock(user_id='u1_external', tenant_id='tid')
     ts = MagicMock(); ts.get_tenant = AsyncMock(return_value=MagicMock())
-    assert await auth.authenticate(MagicMock(), ts, cache_client=MagicMock()) == {'sub': 'u1'}
+    req = MagicMock()
+    assert await auth.authenticate(req, ts, cache_client=MagicMock()) == {'sub': 'u1', 'request_uri': str(req.url.path)}
 
 
 @pytest.mark.asyncio

@@ -34,7 +34,12 @@ class BlocksContext(BaseModel):
     # The IdP session this token was minted under. Standard OIDC claim. Empty for tokens
     # with no user session, such as client_credentials and token exchange.
     SESSION_ID_CLAIM: ClassVar[str] = "sid"
-    
+
+    # Delegation version material. The same names as blocks_genesis._delegation.constants,
+    # kept here because that package imports this module.
+    TOKEN_VERSION_CLAIM: ClassVar[str] = "token_version"
+    SECURITY_STAMP_CLAIM: ClassVar[str] = "security_stamp"
+
     # Properties
     tenant_id: str = ""
     roles: List[str] = Field(default_factory=list)
@@ -74,7 +79,8 @@ class BlocksContextManager:
     # Claims an external identity provider must never be able to set. Stripped before
     # anything downstream sees the token, then written back from what we decided --
     # otherwise a provider names its own tenant, roles or permissions simply by minting
-    # those claims into its token.
+    # those claims into its token. Also everything else a Blocks token carries, including
+    # the version material a delegation grant is built from.
     RESERVED_CLAIMS: ClassVar[tuple] = (
         BlocksContext.TENANT_ID_CLAIM,
         BlocksContext.ORIGINAL_TENANT_ID_CLAIM,
@@ -88,6 +94,12 @@ class BlocksContextManager:
         BlocksContext.IMPERSONATION_SESSION_ID_CLAIM,
         BlocksContext.CLIENT_ID_CLAIM,
         BlocksContext.ROLES_CLAIM,
+        BlocksContext.REQUEST_URI_CLAIM,
+        BlocksContext.TOKEN_CLAIM,
+        BlocksContext.PHONE_NUMBER_CLAIM,
+        BlocksContext.SESSION_ID_CLAIM,
+        BlocksContext.TOKEN_VERSION_CLAIM,
+        BlocksContext.SECURITY_STAMP_CLAIM,
     )
 
     # Wire name -> context field, for the payload a message or gRPC hop carries. The

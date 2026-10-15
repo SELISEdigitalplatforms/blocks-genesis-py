@@ -14,7 +14,11 @@ from cryptography import x509
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.hazmat.primitives import serialization
 
-from blocks_genesis._auth.blocks_context import BlocksContext, BlocksContextManager
+from blocks_genesis._auth.blocks_context import (
+    DEFAULT_ORGANIZATION,
+    BlocksContext,
+    BlocksContextManager,
+)
 from blocks_genesis._auth.jwt_signing_algorithm import (
     is_single_key_source,
     is_symmetric,
@@ -267,6 +271,8 @@ async def authenticate(
         # The provider wrote these claims, so none of them may reach a consumer. Strip
         # them, then rebuild from the tenant record and the provider's own mapping.
         payload = BlocksContextManager.strip_reserved_claims(payload)
+        # Written by this library from the request, never taken from the provider.
+        payload[BlocksContext.REQUEST_URI_CLAIM] = str(request.url.path)
         mapped = map_third_party_claims(payload, provider)
         if mapped is None:
             raise HTTPException(status_code=401, detail="Token validation failed")
@@ -630,6 +636,52 @@ PRIMARY_CERTIFICATE_CACHE_TTL_SECONDS = 3600
 # genesis-net pins ClockSkew to zero on the primary path only. The third-party path
 # leaves it at the framework default, so the two runtimes accept the same tokens.
 THIRD_PARTY_LEEWAY_SECONDS = 300
+
+# Provider settings already warned about in this process, as (tenant, key, event).
+PROVIDER_WARNINGS_MAX_ENTRIES = 1024
+_provider_warnings_logged: set = set()
+
+
+def _warn_about_provider_configuration(provider: ThirdPartyJwtProvider) -> None:
+    """Warn once per provider about settings that widen what it accepts.
+
+    blocks-genesis-net accepts all three (BuildProviderValidationParametersAsync turns the
+    issuer and audience checks off when they are blank), so the token is still validated
+    as before; the warning is for the tenant admin.
+    """
+    findings = []
+    if not (provider.issuer or "").strip():
+        findings.append((
+            "third_party_provider_issuer_not_checked",
+            "This provider has no Issuer, so the token's issuer is not checked. It only "
+            "receives tokens that carry no iss.",
+        ))
+    if not provider.audiences:
+        findings.append((
+            "third_party_provider_audience_not_checked",
+            "This provider has no Audiences, so the token's audience is not checked: a token "
+            "its issuer minted for any other application is accepted.",
+        ))
+    if provider.default_organization_id == DEFAULT_ORGANIZATION:
+        findings.append((
+            "third_party_provider_default_organization",
+            "This provider's DefaultOrganizationId is still \"default\", which consumers read "
+            "as tenant-wide. Set the organization its users belong to.",
+        ))
+
+    for event_name, message in findings:
+        marker = (provider.tenant_id, provider.key, event_name)
+        if marker in _provider_warnings_logged:
+            continue
+        if len(_provider_warnings_logged) >= PROVIDER_WARNINGS_MAX_ENTRIES:
+            _provider_warnings_logged.clear()
+        _provider_warnings_logged.add(marker)
+        security_log(
+            event_name,
+            message,
+            detail={"tenantId": provider.tenant_id, "key": provider.key},
+            is_warning=True,
+        )
 
 
 class ThirdPartyValidation(NamedTuple):
@@ -1236,6 +1288,8 @@ async def _run_fallback(
         },
     )
 
+    _warn_about_provider_configuration(provider)
+
     key = await _resolve_provider_key(token, tenant, provider, cache_client)
     if key is None:
         # Already reported with the specific reason.
@@ -1254,6 +1308,8 @@ async def _run_fallback(
                 "verify_nbf": True,
                 "verify_iss": bool(provider.issuer),
                 "verify_aud": bool(provider.audiences),
+                # As blocks-genesis-net (RequireExpirationTime). iat is not required there either.
+                "require": ["exp"],
             },
             leeway=THIRD_PARTY_LEEWAY_SECONDS,
         )
