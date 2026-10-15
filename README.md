@@ -390,8 +390,10 @@ It registers these routes on the app:
 | Method | Path | Description |
 |---|---|---|
 | GET | `/ping` | Returns `{"status": "healthy", "message": "pong"}`. |
-| GET | `/swagger/index.html` | Swagger UI when `show_docs=True`, otherwise the string `NOT_ALLOWED`. |
-| GET | `/openapi.json` | OpenAPI schema when `show_docs=True`, otherwise an empty object. |
+| GET | `/swagger/index.html` | Swagger UI when `show_docs=True`, otherwise 404. |
+| GET | `/openapi.json` | OpenAPI schema when `show_docs=True`, otherwise 404. |
+
+The API docs routes are off unless `show_docs=True`: with the default `show_docs=False`, FastAPI's own `openapi_url`, `docs_url`, `redoc_url` and Swagger OAuth2 redirect routes are removed as well, so every docs path answers 404.
 
 Tenant validation applies to requests whose path starts with one of the `included_paths` prefixes (default `/api`). The tenant is resolved from the `x-blocks-key` header, the `x-blocks-key` or `tenant_id` query parameter, or the request domain. Requests with an unknown or disabled tenant are rejected, as are requests whose `Origin`/`Referer` domain is not registered for the tenant. A `localhost` origin is accepted only when `is_local` is true. A request with neither header passes this check.
 

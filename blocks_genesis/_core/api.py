@@ -1,7 +1,8 @@
 import logging
-from fastapi import FastAPI, Request, logger
+from fastapi import FastAPI, HTTPException, Request, logger
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.routing import APIRoute
+from starlette.routing import Route
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 import os
 from pathlib import Path
@@ -114,12 +115,25 @@ def _trusted_proxy_hosts() -> Union[str, List[str]]:
     return "*"
 
 
+def _remove_docs_routes(app: FastAPI) -> None:
+    """Remove the docs routes FastAPI registers when the app is created, matched by the app's own paths."""
+    if app.openapi_url:
+        docs_paths = {app.openapi_url, app.docs_url, app.redoc_url, app.swagger_ui_oauth2_redirect_url} - {None}
+        # FastAPI adds these as plain starlette Routes; a consumer's own APIRoute or Mount at the
+        # same path is left alone.
+        app.router.routes[:] = [
+            r for r in app.router.routes
+            if isinstance(r, APIRoute) or type(r) is not Route or r.path not in docs_paths
+        ]
+    app.openapi_url = app.docs_url = app.redoc_url = None
+
+
 def configure_genesis(app: FastAPI, show_docs: bool = False, serve_static: bool = False, static_mount_path: str = "/", static_dir: str = "", cors_origins: Optional[Sequence[str]] = None):
     """
     Configure all genesis middlewares and optionally mount static files.
     Args:
         app: FastAPI app instance
-        show_docs: Show swagger docs
+        show_docs: Serve the API docs; when False, FastAPI's docs routes are removed and the Genesis ones answer 404
         serve_static: If True, mount static files
         static_mount_path: URL path to mount static files (default: "/")
         static_dir: Directory to serve static files from (default: ./static in user project root)
@@ -131,6 +145,8 @@ def configure_genesis(app: FastAPI, show_docs: bool = False, serve_static: bool 
     app.add_middleware(GlobalExceptionHandlerMiddleware)
     FastAPIInstrumentor.instrument_app(app)
     app.add_middleware(GenesisCORSMiddleware, allowed_origins=list(cors_origins or []))
+    if not show_docs:
+        _remove_docs_routes(app)
     if serve_static:
         # Determine the static directory in a robust, pythonic way
         if static_dir:
@@ -160,10 +176,9 @@ def configure_genesis(app: FastAPI, show_docs: bool = False, serve_static: bool 
         logger.debug("Serving the Swagger UI page")
         if show_docs:
             return get_swagger_ui_html(openapi_url=openapi_url, title="Swagger")
-        else:
-            return "NOT_ALLOWED"
+        raise HTTPException(status_code=404)
     @app.get("/openapi.json", include_in_schema=False)
     async def openapi():
         if show_docs:
             return get_openapi(title=app.title, version=app.version, routes=app.routes)
-        return {}
+        raise HTTPException(status_code=404)
