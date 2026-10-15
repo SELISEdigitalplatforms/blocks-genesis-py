@@ -10,6 +10,7 @@ import pytest
 from blocks_genesis._auth.blocks_context import BlocksContextManager
 from blocks_genesis._delegation import constants
 from blocks_genesis._delegation.context import AuthClaimsContext, DelegatedTokenContext
+from blocks_genesis._delegation.grant_store import DelegationGrantRecord
 from blocks_genesis._message.consumer_message import ConsumerMessage
 
 GRANT_ID = "dg_" + "a" * 64
@@ -182,7 +183,7 @@ def rabbit_incoming(body, grant_id):
     return message
 
 
-async def run_rabbit_worker(body, grant_id, observed=None):
+async def run_rabbit_worker(body, grant_id, observed=None, record=None):
     from blocks_genesis._message.rabbit_mq.rabbit_message_worker import RabbitMessageWorker
     from blocks_genesis._message.message_configuration import ConsumerSubscription
 
@@ -201,7 +202,11 @@ async def run_rabbit_worker(body, grant_id, observed=None):
 
     worker._consumer = MagicMock(process_message=process_message)
 
-    store = MagicMock(delete_async=AsyncMock())
+    # The worker checks the header identity against the grant record, so the default record
+    # names the same tenant and user as the SecurityContext header in rabbit_incoming.
+    if record is None:
+        record = DelegationGrantRecord(TenantId="tenant-1", UserId="user-1")
+    store = MagicMock(get_async=AsyncMock(return_value=record), delete_async=AsyncMock())
     provider = MagicMock(invalidate=MagicMock())
 
     subscription = ConsumerSubscription.bind_to_queue("orders.queue", 3)
@@ -224,15 +229,14 @@ async def test_rabbit_worker_releases_the_grant_after_a_successful_settle():
     provider.invalidate.assert_called_once_with(GRANT_ID)
 
 
-async def test_rabbit_worker_retains_the_grant_when_the_handler_fails():
+async def test_rabbit_worker_releases_the_grant_when_the_handler_fails():
     envelope = json.dumps({"type": "Explode", "body": "{}"})
     message, store, provider = await run_rabbit_worker(envelope, GRANT_ID)
 
-    # The ack still happens (existing behaviour), but a failed run must keep its grant so a
-    # redelivery can still mint a token.
+    # The ack is final (no redelivery), so nothing can use the grant again.
     message.ack.assert_awaited_once()
-    store.delete_async.assert_not_awaited()
-    provider.invalidate.assert_not_called()
+    store.delete_async.assert_awaited_once_with(GRANT_ID)
+    provider.invalidate.assert_called_once_with(GRANT_ID)
 
 
 async def test_rabbit_worker_exposes_the_grant_to_the_handler():
@@ -248,6 +252,7 @@ async def test_rabbit_worker_does_not_touch_the_store_without_a_grant():
     envelope = json.dumps({"type": "OrderPlaced", "body": "{}"})
     _, store, provider = await run_rabbit_worker(envelope, None)
 
+    store.get_async.assert_not_awaited()
     store.delete_async.assert_not_awaited()
     provider.invalidate.assert_not_called()
 
@@ -257,6 +262,7 @@ async def test_rabbit_worker_ignores_a_malformed_grant_header():
     envelope = json.dumps({"type": "OrderPlaced", "body": "{}"})
 
     # A malformed id fails closed: the handler sees no grant at all.
-    await run_rabbit_worker(envelope, "dg_short", observed=observed)
+    _, store, _ = await run_rabbit_worker(envelope, "dg_short", observed=observed)
 
     assert observed == [None]
+    store.get_async.assert_not_awaited()

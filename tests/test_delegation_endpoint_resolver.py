@@ -43,7 +43,7 @@ class FakeSession:
     async def __aexit__(self, *exc):
         return False
 
-    def get(self, url):
+    def get(self, url, allow_redirects=True):
         self._recorder["urls"].append(url)
         return self._respond(len(self._recorder["urls"]))
 

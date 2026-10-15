@@ -10,6 +10,8 @@ never reach.
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from starlette.datastructures import URL
+
 from blocks_genesis._auth import auth
 from blocks_genesis._auth.blocks_context import BlocksContext, BlocksContextManager
 from blocks_genesis._auth.third_party_provider import ThirdPartyJwtProvider
@@ -67,7 +69,7 @@ def test_switch_reads_the_bson_name():
 
 def _request(headers=None):
     request = MagicMock()
-    request.url = "https://api.klax.io/x"
+    request.url = URL("https://api.klax.io/x")
     request.headers = headers or {}
     request.cookies = {}
     request.query_params = {}
@@ -248,7 +250,7 @@ def test_context_refuses_a_blank_tenant():
 @pytest.mark.asyncio
 async def test_saras_crafted_claims_never_reach_the_context():
     request = MagicMock()
-    request.url = "https://api.klax.io/x"
+    request.url = URL("https://api.klax.io/x")
     request.headers = {}
     request.cookies = {}
     request.query_params = {}
@@ -283,7 +285,7 @@ async def test_saras_crafted_claims_never_reach_the_context():
 async def test_blocks_tokens_are_untouched_by_the_wash():
     """Ahmed's token is ours. Its claims are read exactly as before."""
     request = MagicMock()
-    request.url = "https://api.klax.io/x"
+    request.url = URL("https://api.klax.io/x")
     request.headers = {}
     request.cookies = {}
     request.query_params = {}

@@ -10,8 +10,11 @@ Resolution order, per section 5.5 of the delegated-access spec:
 2. `BLOCKS_IAM_TOKEN_ENDPOINT` (fallback) -- a complete URL, not a base and not a template, so no
    prefix is ever guessed.
 
-A successful discovery is cached per tenant. A fallback is not cached, so discovery is retried
-lazily on later calls. If neither is configured, startup fails.
+A discovered endpoint is accepted only on the same origin as `BLOCKS_IAM_BASE_URL`, and neither
+call follows a redirect, so the grant is only ever posted to IAM's internal address.
+
+A successful discovery is cached per tenant for `DISCOVERY_CACHE_SECONDS`. A fallback is not
+cached, so discovery is retried lazily on later calls. If neither is configured, startup fails.
 
 `Tenant.jwt_token_parameters.issuer` is deliberately not used as a base URL: IAM separates
 `issuer` from `apiBase`, and the issuer is an identifier, not a reachable API host.
@@ -20,13 +23,15 @@ lazily on later calls. If neither is configured, startup fails.
 import asyncio
 import logging
 import os
-from typing import Dict, Optional
-from urllib.parse import urlparse
+import time
+from typing import Callable, Dict, Optional, Tuple
+from urllib.parse import quote, urlparse
 
 import aiohttp
 
 from blocks_genesis._core.configuration import get_configurations
 from blocks_genesis._delegation.constants import (
+    DISCOVERY_CACHE_SECONDS,
     FRONTEND_RUNTIME_SECTION,
     IAM_BASE_URL_KEY,
     IAM_TOKEN_ENDPOINT_KEY,
@@ -67,11 +72,35 @@ def _resolve_setting(key: str) -> Optional[str]:
     return None
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _origin(url: str) -> Optional[Tuple[str, str, Optional[int]]]:
+    """Scheme, host and port, from the parsed URL so userinfo, case and a trailing dot cannot fool it."""
+    try:
+        parsed = urlparse(url)
+        scheme = parsed.scheme.lower()
+        host = (parsed.hostname or "").rstrip(".")
+        port = parsed.port or _DEFAULT_PORTS.get(scheme)
+    except ValueError:
+        return None
+    if not scheme or not host:
+        return None
+    return scheme, host, port
+
+
 class DelegationTokenEndpointResolver:
-    def __init__(self) -> None:
-        self._discovered: Dict[str, str] = {}
+    def __init__(self, time_func: Optional[Callable[[], float]] = None) -> None:
+        self._discovered: Dict[str, Tuple[str, float]] = {}
         self._lock = asyncio.Lock()
         self._fallback_warning_logged = False
+        self._time = time_func or time.monotonic
+
+    def _cached(self, tenant_id: str) -> Optional[str]:
+        entry = self._discovered.get(tenant_id)
+        if entry and self._time() < entry[1]:
+            return entry[0]
+        return None
 
     def ensure_configured(self) -> None:
         """Raise when neither key is configured, so a misconfigured deployment fails fast."""
@@ -88,18 +117,18 @@ class DelegationTokenEndpointResolver:
         if not tenant_id:
             raise RuntimeError("Cannot resolve the IAM token endpoint without a tenant.")
 
-        cached = self._discovered.get(tenant_id)
+        cached = self._cached(tenant_id)
         if cached:
             return cached
 
         async with self._lock:
-            cached = self._discovered.get(tenant_id)
+            cached = self._cached(tenant_id)
             if cached:
                 return cached
 
             discovered = await self._try_discover_async(tenant_id)
             if discovered:
-                self._discovered[tenant_id] = discovered
+                self._discovered[tenant_id] = (discovered, self._time() + DISCOVERY_CACHE_SECONDS)
                 return discovered
 
         configured = _resolve_setting(IAM_TOKEN_ENDPOINT_KEY)
@@ -122,12 +151,13 @@ class DelegationTokenEndpointResolver:
         if not base_url:
             return None
 
-        url = f"{base_url.rstrip('/')}/{tenant_id}/.well-known/openid-configuration"
+        url = f"{base_url.rstrip('/')}/{quote(tenant_id, safe='')}/.well-known/openid-configuration"
 
         try:
             timeout = aiohttp.ClientTimeout(total=DISCOVERY_TIMEOUT_SECONDS)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url) as response:
+                # A 3xx is not followed; it fails the status check below.
+                async with session.get(url, allow_redirects=False) as response:
                     if response.status != 200:
                         logger.warning(
                             "OIDC discovery for the IAM token endpoint returned %s", response.status
@@ -147,6 +177,14 @@ class DelegationTokenEndpointResolver:
         parsed = urlparse(token_endpoint)
         if not parsed.scheme or not parsed.netloc:
             logger.warning("OIDC discovery returned a token_endpoint that is not an absolute URL.")
+            return None
+
+        expected = _origin(base_url)
+        if expected is None or _origin(token_endpoint) != expected:
+            logger.warning(
+                "OIDC discovery returned a token_endpoint outside the origin of '%s'; it was rejected.",
+                IAM_BASE_URL_KEY,
+            )
             return None
 
         return token_endpoint
