@@ -13,13 +13,30 @@ from blocks_genesis._auth.blocks_context import BlocksContextManager
 from blocks_genesis._core.secret_loader import get_blocks_secret
 from blocks_genesis._delegation.constants import DELEGATION_GRANT_HEADER
 from blocks_genesis._delegation.context import DelegatedTokenContext
+from blocks_genesis._delegation.grant_binding import (
+    GRANT_MISMATCH_DEAD_LETTER_REASON,
+    check_grant_binding,
+)
 from blocks_genesis._delegation.grant_store import get_delegation_grant_store
 from blocks_genesis._delegation.token_provider import get_delegated_token_provider
+from blocks_genesis._lmt.redaction import safe_baggage_items
 from blocks_genesis._message.consumer import Consumer
 from blocks_genesis._message.event_message import EventMessage
 from blocks_genesis._message.message_configuration import MessageConfiguration
+from blocks_genesis._message.security_context_header import (
+    INVALID_SECURITY_CONTEXT_DEAD_LETTER_REASON,
+    SECURITY_CONTEXT_INVALID,
+    parse_security_context_header,
+)
 
 logger = logging.getLogger(__name__)
+
+PROCESSING_FAILED_DEAD_LETTER_REASON = "ProcessingFailed"
+UNDECODABLE_MESSAGE_DEAD_LETTER_REASON = "UndecodableMessage"
+
+
+class _UndecodableMessage(Exception):
+    """The message's own properties or body are not valid UTF-8 (not an error from the handler)."""
 
 
 class AzureMessageWorker:
@@ -72,46 +89,53 @@ class AzureMessageWorker:
                 prefetch_count=self._message_config.azure_service_bus_configuration.queue_prefetch_count,
             )
             self._receivers.append(receiver)
-            receiver_tasks.append(self.safe_receiver_wrapper(receiver, queue_name))
+            receiver_tasks.append(
+                self.safe_receiver_wrapper(
+                    receiver,
+                    queue_name,
+                    max_delivery_count=self._message_config.azure_service_bus_configuration.queue_max_delivery_count,
+                )
+            )
 
         for topic_name in self._message_config.azure_service_bus_configuration.topics:
-            subscription_name = self._message_config.subscription_name.get(
-                topic_name, "default-subscription"
-            )
+            subscription_name = self._message_config.get_subscription_name(topic_name)
             receiver = self._service_bus_client.get_subscription_receiver(
                 topic_name=topic_name,
                 subscription_name=subscription_name,
                 prefetch_count=self._message_config.azure_service_bus_configuration.topic_prefetch_count,
             )
             self._receivers.append(receiver)
-            receiver_tasks.append(self.safe_receiver_wrapper(receiver, topic_name))
+            receiver_tasks.append(
+                self.safe_receiver_wrapper(
+                    receiver,
+                    topic_name,
+                    max_delivery_count=self._message_config.azure_service_bus_configuration.topic_subscription_max_delivery_count,
+                )
+            )
 
         self._logger.info("Receivers started")
         await asyncio.gather(*receiver_tasks, return_exceptions=True)
 
-    async def safe_receiver_wrapper(self, receiver: ServiceBusReceiver, name: str):
+    async def safe_receiver_wrapper(
+        self, receiver: ServiceBusReceiver, name: str, max_delivery_count: Optional[int] = None
+    ):
         try:
-            await self.process_receiver(receiver)
+            await self.process_receiver(receiver, max_delivery_count=max_delivery_count)
         except Exception as ex:
             self._logger.error(
                 "Receiver task for %s crashed but will be ignored: %s", name, ex
             )
 
-    async def process_receiver(self, receiver: ServiceBusReceiver):
+    async def process_receiver(self, receiver: ServiceBusReceiver, max_delivery_count: Optional[int] = None):
         async with receiver:
             async for message in receiver:
                 try:
-                    await self.message_handler(receiver, message)
+                    # message_handler settles every message itself, so nothing is settled here.
+                    await self.message_handler(receiver, message, max_delivery_count=max_delivery_count)
                 except Exception as ex:
                     self._logger.error(
                         "Error in message_handler, skipping message: %s", ex
                     )
-                    try:
-                        await receiver.abandon_message(message)
-                    except Exception as abandon_ex:
-                        self._logger.warning(
-                            "Failed to abandon message: %s", abandon_ex
-                        )
 
     def decode_app_properties(self, properties):
         if not properties:
@@ -124,31 +148,48 @@ class AzureMessageWorker:
         }
 
     async def message_handler(
-        self, receiver: ServiceBusReceiver, message: ServiceBusReceivedMessage
+        self,
+        receiver: ServiceBusReceiver,
+        message: ServiceBusReceivedMessage,
+        *,
+        max_delivery_count: Optional[int] = None,
     ):
+        """Handle one message and settle it exactly once.
+
+        `max_delivery_count` is the entity's configured MaxDeliveryCount. A failure on the final
+        attempt is dead-lettered (and its checked grant released); without it every failure is
+        abandoned for a retry.
+        """
         message_id = message.message_id
         self._logger.info("Received message: %s", message_id)
-
-        app_props = self.decode_app_properties(message.application_properties)
-        trace_id = app_props.get("TraceId", "")
-        span_id = app_props.get("SpanId", "")
-        tenant_id = app_props.get("TenantId", "")
-        security_context_raw = app_props.get("SecurityContext", "")
-        baggage_str = app_props.get("Baggage", "{}")
-        delegation_grant = app_props.get(DELEGATION_GRANT_HEADER) or None
-
-        self._restore_security_context(security_context_raw)
-
-        # Deliberately not a span attribute and not in baggage: the grant id is a credential.
-        DelegatedTokenContext.set(delegation_grant)
 
         cancellation_event = asyncio.Event()
         self._active_message_renewals[message_id] = cancellation_event
         renewal_task = asyncio.create_task(
             self.start_auto_renewal_task(message, receiver, cancellation_event)
         )
-        
+
+        delegation_grant = None
+        grant_verified = False
         try:
+            try:
+                app_props = self.decode_app_properties(message.application_properties)
+            except UnicodeDecodeError as ex:
+                raise _UndecodableMessage() from ex
+            trace_id = app_props.get("TraceId", "")
+            span_id = app_props.get("SpanId", "")
+            tenant_id = app_props.get("TenantId", "")
+            security_context_raw = app_props.get("SecurityContext", "")
+            baggage_str = app_props.get("Baggage", "{}")
+            delegation_grant = app_props.get(DELEGATION_GRANT_HEADER) or None
+
+            security_context_valid, security_context = parse_security_context_header(security_context_raw)
+            if security_context_valid:
+                BlocksContextManager.set_context(security_context)
+
+            # Deliberately not a span attribute and not in baggage: the grant id is a credential.
+            DelegatedTokenContext.set(delegation_grant)
+
             context = (
                 TraceContextTextMapPropagator().extract(
                     {"traceparent": f"00-{trace_id}-{span_id}-01"}
@@ -164,22 +205,58 @@ class AzureMessageWorker:
             ) as span:
                 span.set_attribute("messaging.system", "azure.servicebus")
                 span.set_attribute("message.id", message_id)
-                span.set_attribute("SecurityContext", security_context_raw)
-                span.set_attribute("message.body", str(message))
                 span.set_attribute("baggage.TenantId", tenant_id)
                 span.set_attribute("usage", True)
 
                 try:
                     baggages = json.loads(baggage_str)
-                    for key, value in baggages.items():
-                        span.set_attribute(f"baggage.{key}", value)
-                except json.JSONDecodeError:
+                    if isinstance(baggages, dict):
+                        for key, value in safe_baggage_items(baggages).items():
+                            span.set_attribute(f"baggage.{key}", value)
+                    else:
+                        self._logger.warning("Baggage header is not a JSON object; ignored")
+                except (json.JSONDecodeError, TypeError):
                     self._logger.warning("Invalid baggage JSON")
 
+                if not security_context_valid:
+                    # Final, so not abandoned: a redelivery would be refused again. Neither the
+                    # header nor the parse error is logged: either can carry personal data.
+                    self._logger.error("Message %s not handled: %s", message_id, SECURITY_CONTEXT_INVALID)
+                    span.set_status(Status(StatusCode.ERROR, SECURITY_CONTEXT_INVALID))
+                    await receiver.dead_letter_message(
+                        message,
+                        reason=INVALID_SECURITY_CONTEXT_DEAD_LETTER_REASON,
+                        error_description=SECURITY_CONTEXT_INVALID,
+                    )
+                    return
+
+                refusal = await check_grant_binding(
+                    BlocksContextManager.get_context(),
+                    delegation_grant,
+                    get_delegation_grant_store(),
+                    message_id,
+                )
+                if refusal:
+                    # Final, so not abandoned: a redelivery would be refused again. The grant is
+                    # kept; its TTL removes it.
+                    span.set_status(Status(StatusCode.ERROR, refusal))
+                    await receiver.dead_letter_message(
+                        message,
+                        reason=GRANT_MISMATCH_DEAD_LETTER_REASON,
+                        error_description=refusal,
+                    )
+                    return
+
+                grant_verified = True
                 start_time = asyncio.get_event_loop().time()
-                d = self._decode_message_body(message)
+                try:
+                    d = self._decode_message_body(message)
+                except UnicodeDecodeError as ex:
+                    raise _UndecodableMessage() from ex
 
                 msg = EventMessage(**json.loads(d))
+                span.set_attribute("message.size", len(d.encode("utf-8")))
+                span.set_attribute("message.type", msg.type)
                 await self._consumer.process_message(msg.type, msg.body)
                 processing_time = (asyncio.get_event_loop().time() - start_time) * 1000
                 self._logger.info(
@@ -196,15 +273,16 @@ class AzureMessageWorker:
                 # would leave a redelivery unable to mint a token.
                 await self._release_delegation_grant(delegation_grant)
 
+        except _UndecodableMessage:
+            self._logger.error("Message %s could not be decoded; dead-lettering it", message_id)
+            await self._settle_undecodable(receiver, message, delegation_grant if grant_verified else None)
         except Exception as ex:
             self._logger.error(
                 "Processing failed for message %s: %s", message_id, ex
             )
-            try:
-                await receiver.abandon_message(message)
-            except Exception as abandon_ex:
-                self._logger.warning("Abandon message failed: %s", abandon_ex)
-            raise
+            await self._settle_failure(
+                receiver, message, ex, max_delivery_count, delegation_grant if grant_verified else None
+            )
         finally:
             cancellation_event.set()
             self._active_message_renewals.pop(message_id, None)
@@ -212,27 +290,75 @@ class AzureMessageWorker:
             BlocksContextManager.clear_context()
             DelegatedTokenContext.clear()
 
-    async def _release_delegation_grant(self, delegation_grant: Optional[str]) -> None:
-        """Remove the grant and its cached token after a successful settle.
+    async def _settle_undecodable(
+        self,
+        receiver: ServiceBusReceiver,
+        message: ServiceBusReceivedMessage,
+        verified_grant: Optional[str],
+    ) -> None:
+        """Dead-letter at once: a redelivery cannot decode either. Business op -> DLQ -> DEL."""
+        try:
+            await receiver.dead_letter_message(
+                message,
+                reason=UNDECODABLE_MESSAGE_DEAD_LETTER_REASON,
+                error_description="UnicodeDecodeError",
+            )
+        except Exception as dead_letter_ex:
+            self._logger.warning("Dead-letter message failed: %s", dead_letter_ex)
+            return
+        await self._release_delegation_grant(verified_grant)
 
-        Best effort: if this fails, the absolute TTL still bounds the grant. A message that was
-        abandoned instead keeps its grant, so the redelivery can still mint a token.
+    async def _settle_failure(
+        self,
+        receiver: ServiceBusReceiver,
+        message: ServiceBusReceivedMessage,
+        ex: Exception,
+        max_delivery_count: Optional[int],
+        verified_grant: Optional[str],
+    ) -> None:
+        """Abandon for a retry, or dead-letter on the final attempt and release the checked grant.
+
+        `delivery_count` counts the previous failed deliveries, so the first delivery is attempt 1.
+        A grant that was never checked is kept: it may not belong to this message.
+        """
+        if max_delivery_count is None or (message.delivery_count or 0) + 1 < max_delivery_count:
+            try:
+                await receiver.abandon_message(message)
+            except Exception as abandon_ex:
+                self._logger.warning("Abandon message failed: %s", abandon_ex)
+            return
+
+        attempt = (message.delivery_count or 0) + 1
+        try:
+            await receiver.dead_letter_message(
+                message,
+                reason=PROCESSING_FAILED_DEAD_LETTER_REASON,
+                error_description=f"{type(ex).__name__}; attempt {attempt} of {max_delivery_count}",
+            )
+        except Exception as dead_letter_ex:
+            self._logger.warning("Dead-letter message failed: %s", dead_letter_ex)
+            return
+        # Order is fixed: business op -> DLQ -> DEL.
+        await self._release_delegation_grant(verified_grant)
+
+    async def _release_delegation_grant(self, delegation_grant: Optional[str]) -> None:
+        """Remove the grant and its cached token after a final settle.
+
+        Best effort: a failure is logged and never raised, so it cannot cause a second settle. The
+        absolute TTL still bounds the grant. A message that was abandoned instead keeps its grant,
+        so the redelivery can still mint a token.
         """
         if not delegation_grant:
             return
 
-        get_delegated_token_provider().invalidate(delegation_grant)
-        await get_delegation_grant_store().delete_async(delegation_grant)
-
-    def _restore_security_context(self, security_context_raw: str) -> None:
-        """Restore the security context from a serialized header value, if present."""
-        if not security_context_raw:
-            return
         try:
-            sc = json.loads(security_context_raw)
-            BlocksContextManager.set_context(BlocksContextManager.from_transport(sc))
-        except Exception as ctx_err:
-            self._logger.warning("Invalid security context: %s", ctx_err)
+            get_delegated_token_provider().invalidate(delegation_grant)
+            await get_delegation_grant_store().delete_async(delegation_grant)
+        except Exception as ex:
+            # Not the grant id: it is a credential.
+            self._logger.warning(
+                "Could not release the delegation grant (%s); its TTL removes it.", type(ex).__name__
+            )
 
     def _decode_message_body(self, message: ServiceBusReceivedMessage) -> str:
         """Decode the Service Bus message body to a UTF-8 string (empty JSON if absent)."""

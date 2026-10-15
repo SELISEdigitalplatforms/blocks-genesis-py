@@ -154,7 +154,7 @@ message_config = MessageConfiguration(
 app = WorkerConsoleApp("my_worker", message_config, {"DemoEvent": handle_demo_event})
 ```
 
-Start the consume loop with `asyncio.run(app.run(callback))`, where `callback` is an async function invoked once the worker is ready. The mapping passed as the third argument registers one handler per payload type.
+Start the consume loop with `asyncio.run(app.run(callback))`, where `callback` is an async function invoked once the worker is ready. The mapping passed as the third argument registers one handler per payload type. A handler may be an async function or a class with a no-argument constructor and an async `handle(self, data)` method.
 
 ### Publishing a message
 
@@ -183,6 +183,22 @@ redeems that id at IAM (RFC 8693 token exchange) for a normal, short-lived acces
 original user's tenant, organization, roles and permissions. A long job can redeem as often as it
 needs; nothing rotates, so retries are safe.
 
+**Receiving checks the grant.** When a message carries a grant, the worker reads the grant record
+before the handler runs and compares it with the restored `SecurityContext`: tenant, user and
+organization, plus the client for a grant made by an OAuth client. If they differ, or the record is
+gone (expired, evicted or never written to this Redis), the handler does not run. Azure Service Bus
+dead-letters the message with reason `DelegationGrantMismatch` and a reason code in the
+description; RabbitMQ acks it and logs an error. Either way the grant is kept, and its TTL removes
+it. A message with no grant is handled as before. If you pass `ConsumerMessage.context` yourself, it
+must name the same tenant, user and organization as the sender's own context, because the grant is
+built from the sender's context.
+
+A `SecurityContext` header that is present but cannot be read (not JSON, not a JSON object, or not
+a valid context) is refused the same way, before the grant is checked: Azure Service Bus
+dead-letters the message with reason `InvalidSecurityContext`, and RabbitMQ acks it and logs an
+error. Neither the header nor the parse error is logged. A missing or empty header (`""` or `{}`)
+still runs the handler with no context.
+
 The wire format is identical to `blocks-genesis-net` — grant id shape, signature input, Redis keys,
 JSON field names, header names — and a shared conformance vector is asserted in both SDKs.
 
@@ -202,6 +218,10 @@ await MessageClient.get_instance().send_to_consumer_async(
     )
 )
 ```
+
+A grant lives at most two days (a longer `delegation_ttl_seconds` is cut to two days), and a grant
+whose message was not delivered, because the send failed or RabbitMQ returned it as unroutable, is
+deleted at once.
 
 ### Using the token is explicit, per call
 
@@ -265,8 +285,14 @@ the public host.**
 - Restrict Redis writes to `delegation:*` to the delegation component; write access there is
   impersonation authority.
 - The exchange signature has a ±60s clock window, so **NTP must be correct** on worker and IAM nodes.
-- A grant is deleted only after a successful run (business op → ACK → DEL). A failed run keeps its
-  grant so a redelivery still works; the absolute TTL is the backstop.
+- A grant is deleted only after the message is settled for good, in the order business op → settle
+  → DEL. RabbitMQ acks every message once (no retry), so it deletes the grant after the ack whether
+  the handler succeeded or failed. Azure Service Bus deletes it after completing the message, or
+  after dead-lettering it on its final attempt (reason `ProcessingFailed`; the final attempt is
+  judged from the configured `queue_max_delivery_count` or `topic_subscription_max_delivery_count`)
+  or because it could not be decoded (reason `UndecodableMessage`). An abandoned message keeps its
+  grant so the redelivery still works. A refused message, or one whose grant was never checked,
+  keeps its grant until the absolute TTL. A failed delete is logged and left to the TTL.
 
 ## Public API
 
@@ -329,7 +355,7 @@ Secret names resolved from the vault (the fields of `BlocksSecret`):
 | `TraceConnectionString` | MongoDB connection string used by the trace exporter. |
 | `LogDatabaseName` | MongoDB database name for logs. |
 | `MetricDatabaseName` | Reserved metric database name. |
-| `TraceDatabaseName` | MongoDB database name for traces. |
+| `TraceDatabaseName` | MongoDB database name for traces. A missing tenant trace collection is created as a time-series collection with a 90-day expiry; an existing plain one gets a 90-day TTL index on `Timestamp`. Both get an index on `TraceId`. |
 | `ServiceName` | Service identifier; overwritten at load time with the name passed to `configure_lifespan` or `WorkerConsoleApp`. |
 | `DatabaseConnectionString` | Root tenant metadata database connection string. |
 | `RootDatabaseName` | Root database containing tenant and authorization metadata. |
