@@ -240,21 +240,24 @@ class BlocksContextManager:
 
     @staticmethod
     def normalize_domain(url: str) -> str:
-        """Normalize URL/host to hostname only (no protocol, port, or path)."""
+        """Normalize URL/host to hostname only (no protocol, port, path, or trailing dot)."""
         if not url or not str(url).strip():
             return ""
 
         raw = str(url).strip()
         candidate = raw if "://" in raw else f"//{raw}"
 
+        host = ""
         try:
             parsed = urlparse(candidate)
             if parsed.hostname:
-                return parsed.hostname.strip().lower()
+                host = parsed.hostname.strip().lower()
         except Exception:
             pass
 
-        return raw.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0].strip().lower()
+        if not host:
+            host = raw.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0].strip().lower()
+        return host[:-1] if host.endswith(".") else host
 
     @staticmethod
     def is_localhost_host(host: Optional[str]) -> bool:

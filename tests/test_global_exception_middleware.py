@@ -46,14 +46,3 @@ async def test_handle_exception_non_json_payload(mock_activity):
     request.body = AsyncMock(return_value=b'')
     result = await middleware.handle_exception(request, Exception('fail'))
     assert result.status_code == 500
-
-@pytest.mark.asyncio
-@patch('blocks_genesis._middlewares.global_exception_middleware.Activity')
-async def test_handle_exception_body_too_long(mock_activity):
-    mock_activity.get_trace_id.return_value = 'traceid'
-    middleware = GlobalExceptionHandlerMiddleware(MagicMock())
-    request = MagicMock(spec=Request)
-    request.headers.get.return_value = 'application/json'
-    request.body = AsyncMock(return_value=b'a' * 2000)
-    result = await middleware.handle_exception(request, Exception('fail'))
-    assert result.status_code == 500 

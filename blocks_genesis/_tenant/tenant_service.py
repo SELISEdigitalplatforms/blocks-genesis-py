@@ -113,17 +113,26 @@ class TenantService:
         normalized = normalize_domain(domain)
         domains = [f"http://{normalized}", f"https://{normalized}"]
 
-        # Check in-memory cache first
+        # Check in-memory cache first. A tenant that verified the domain wins over one that only claims it.
+        matches = []
         for tenant in self._tenant_cache.values():
-            if tenant.applications and any(
-                app.domain and normalize_domain(app.domain) == normalized
-                for app in tenant.applications
-            ):
-                return tenant
+            apps = [
+                app for app in (tenant.applications or [])
+                if app.domain and normalize_domain(app.domain) == normalized
+            ]
+            if apps:
+                matches.append((tenant, any(app.is_domain_verified for app in apps)))
+        if matches:
+            return next((t for t, verified in matches if verified), matches[0][0])
 
-        # Query database if not found in cache
+        # Query database if not found in cache, verified owner first
         try:
-            tenant_dict = await self.database[self._collection_name].find_one({
+            collection = self.database[self._collection_name]
+            tenant_dict = await collection.find_one({
+                "Applications": {
+                    "$elemMatch": {"Domain": {"$in": domains}, "IsDomainVerified": True}
+                }
+            }) or await collection.find_one({
                 "Applications": {
                     "$elemMatch": {"Domain": {"$in": domains}}
                 }
