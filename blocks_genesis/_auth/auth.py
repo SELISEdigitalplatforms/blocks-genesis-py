@@ -34,7 +34,11 @@ from blocks_genesis._subscription.context import SubscriptionUsageContext
 from blocks_genesis._subscription.models import UsageResult
 from blocks_genesis._subscription.usage_service import SubscriptionUsageService
 from blocks_genesis._tenant.tenant import Tenant
-from blocks_genesis._tenant.tenant_service import TenantService
+from blocks_genesis._tenant.tenant_service import (
+    TenantService,
+    get_tenant_service,
+    initialize_tenant_service,
+)
 from blocks_genesis._utilities.crypto_service import CryptoService
 
 _logger = logging.getLogger(__name__)
@@ -153,6 +157,10 @@ async def fetch_cert_bytes(cert_url: str) -> bytes:
 # MAIN AUTHENTICATION HANDLER
 # ============================================================================
 
+def _is_disabled(tenant: Optional[Tenant]) -> bool:
+    return getattr(tenant, "is_disabled", False) is True
+
+
 async def _resolve_signing_tenant(
     token: str,
     tenant: Tenant,
@@ -176,6 +184,8 @@ async def _resolve_signing_tenant(
         signer_id = claims.get("original_tenant_id")
         if signer_id and signer_id != tenant_id:
             signer_tenant = await tenant_service.get_tenant(signer_id)
+            if _is_disabled(signer_tenant):
+                raise HTTPException(status_code=401, detail="Tenant not found")
             if signer_tenant:
                 return signer_tenant
 
@@ -217,7 +227,7 @@ async def authenticate(
 
     # 3. Load tenant configuration
     tenant = await tenant_service.get_tenant(tenant_id) if tenant_id else None
-    if not tenant:
+    if not tenant or _is_disabled(tenant):
         raise HTTPException(status_code=401, detail="Tenant not found")
 
     # Store tenant in request state for later use
@@ -1327,6 +1337,15 @@ async def _check_permission(
         return False
 
 
+async def _get_process_tenant_service() -> TenantService:
+    """Return the process-wide tenant service, creating it once if startup skipped it."""
+    try:
+        return get_tenant_service()
+    except RuntimeError:
+        _logger.warning("Tenant service was not initialized at startup; initializing it now")
+        return await initialize_tenant_service()
+
+
 def authorize(resource_name: str = None, bypass_authorization: bool = False):
     """
     FastAPI dependency for authorization with mandatory resource protection.
@@ -1347,7 +1366,7 @@ def authorize(resource_name: str = None, bypass_authorization: bool = False):
         raise ValueError("resource_name is required for protected endpoint authorization")
     
     async def dependency(request: Request):
-        tenant_service = TenantService()
+        tenant_service = await _get_process_tenant_service()
         cache_client = CacheProvider.get_client()
         db_context = DbContext.get_provider()
 
