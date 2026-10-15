@@ -12,6 +12,7 @@ from blocks_genesis._lmt.activity import Activity
 
 RETENTION_SECONDS = 90 * 24 * 60 * 60
 LOG_QUEUE_MAX_SIZE = 10_000
+_NAMESPACE_EXISTS = 48
 
 
 class MongoBatchLogger:
@@ -47,27 +48,35 @@ class MongoBatchLogger:
     def _create_collection_if_not_exists(self, db, collection_name: str):
         collection_exists = self._collection_exists(db, collection_name)
         if not collection_exists:
-            db.create_collection(
-                collection_name,
-                timeseries={
-                    "timeField": "Timestamp",
-                    "metaField": "TenantId",
-                    "granularity": "minutes",
-                },
-                expireAfterSeconds=RETENTION_SECONDS,
-            )
-            return
+            try:
+                db.create_collection(
+                    collection_name,
+                    timeseries={
+                        "timeField": "Timestamp",
+                        "metaField": "TenantId",
+                        "granularity": "minutes",
+                    },
+                    expireAfterSeconds=RETENTION_SECONDS,
+                )
+                return
+            except (errors.CollectionInvalid, errors.OperationFailure) as ex:
+                if isinstance(ex, errors.OperationFailure) and ex.code != _NAMESPACE_EXISTS:
+                    raise
+                # Someone else created it first; treat it by what they made.
 
         if not self._is_time_series_collection(db, collection_name):
-            db.drop_collection(collection_name)
-            db.create_collection(
-                collection_name,
-                timeseries={
-                    "timeField": "Timestamp",
-                    "metaField": "TenantId",
-                    "granularity": "minutes",
-                },
-                expireAfterSeconds=RETENTION_SECONDS,
+            # Never drop it: that would delete its log history. A TTL index keeps its documents expiring.
+            try:
+                db[collection_name].create_index(
+                    [("Timestamp", ASCENDING)], name="Timestamp_TTL", expireAfterSeconds=RETENTION_SECONDS
+                )
+                kept = "kept with a TTL index"
+            except Exception as ex:
+                # Type name only, as above. Not raised, so the tenant index is still created.
+                kept = f"kept without a TTL index ({type(ex).__name__})"
+            sys.stderr.write(
+                f"[MongoBatchLogger] log collection is a plain collection, not time-series: "
+                f"{kept}; migrate it to time-series\n"
             )
 
     def _collection_exists(self, db, collection_name: str) -> bool:

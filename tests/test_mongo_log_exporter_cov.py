@@ -47,7 +47,7 @@ def test_create_collection_exists_not_ts():
     b._collection_exists = MagicMock(return_value=True)
     b._is_time_series_collection = MagicMock(return_value=False)
     b._create_collection_if_not_exists(db, 'c')
-    db.drop_collection.assert_called()
+    db.drop_collection.assert_not_called()
 
 
 def test_create_collection_exists_ts():
