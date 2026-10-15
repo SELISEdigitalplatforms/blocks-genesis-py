@@ -150,8 +150,9 @@ class DelegationGrantStore:
     async def get_async(self, delegation_id: Optional[str]) -> Optional[DelegationGrantRecord]:
         """Read a grant record.
 
-        Used only for chained delegation: a worker-originated send carries TokenVersion and
-        SecurityStamp forward from the grant it is already holding.
+        Used for chained delegation, where a worker-originated send carries TokenVersion and
+        SecurityStamp forward from the grant it is already holding, and by the worker, which checks
+        a received message's identity against its grant before running the handler.
         """
         if not is_well_formed(delegation_id):
             return None

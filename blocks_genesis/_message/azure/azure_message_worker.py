@@ -13,6 +13,10 @@ from blocks_genesis._auth.blocks_context import BlocksContextManager
 from blocks_genesis._core.secret_loader import get_blocks_secret
 from blocks_genesis._delegation.constants import DELEGATION_GRANT_HEADER
 from blocks_genesis._delegation.context import DelegatedTokenContext
+from blocks_genesis._delegation.grant_binding import (
+    GRANT_MISMATCH_DEAD_LETTER_REASON,
+    check_grant_binding,
+)
 from blocks_genesis._delegation.grant_store import get_delegation_grant_store
 from blocks_genesis._delegation.token_provider import get_delegated_token_provider
 from blocks_genesis._message.consumer import Consumer
@@ -173,6 +177,23 @@ class AzureMessageWorker:
                         span.set_attribute(f"baggage.{key}", value)
                 except json.JSONDecodeError:
                     self._logger.warning("Invalid baggage JSON")
+
+                refusal = await check_grant_binding(
+                    BlocksContextManager.get_context(),
+                    delegation_grant,
+                    get_delegation_grant_store(),
+                    message_id,
+                )
+                if refusal:
+                    # Final, so not abandoned: a redelivery would be refused again. The grant is
+                    # kept; its TTL removes it.
+                    span.set_status(Status(StatusCode.ERROR, refusal))
+                    await receiver.dead_letter_message(
+                        message,
+                        reason=GRANT_MISMATCH_DEAD_LETTER_REASON,
+                        error_description=refusal,
+                    )
+                    return
 
                 start_time = asyncio.get_event_loop().time()
                 d = self._decode_message_body(message)
