@@ -1637,7 +1637,8 @@ def subscription_usage_snapshot(
     alongside it.
 
     tenant_id / organization_id: fallback ids for a request with no context. Without
-    them, a missing context is still a 401.
+    them, a context that is missing or not signed in is a 401 -- the tenant middleware's
+    anonymous context carries ids but is not a sign-in.
 
     Reads usage straight from Mongo (no Utilities HTTP call). Read it back with
     `SubscriptionUsageContext.current()`. Never raises on a missing organization or a DB
@@ -1649,7 +1650,8 @@ def subscription_usage_snapshot(
         else:
             context = BlocksContextManager.get_context()
 
-        if not context and not (tenant_id and organization_id):
+        signed_in = context is not None and context.is_authenticated is True
+        if not signed_in and not (tenant_id and organization_id):
             raise HTTPException(status_code=401, detail="Missing context")
 
         await resolve_subscription_usage(

@@ -12,6 +12,15 @@ logger = logging.getLogger(__name__)
 
 _USAGE_CURRENT = "SubscriptionUsageCurrent"
 _ENTITLEMENTS_CURRENT = "SubscriptionEntitlementsCurrent"
+# Latest period first, a best-effort stand-in for "newest subscription first". During a
+# plan change the old and new subscriptions are both live, and a reader taking the first
+# row per meter should get the current plan's, not whichever Mongo returns first. This is
+# right when the old subscription ends at the change: the new one opened the later period.
+# It is not right when the old subscription renews during the overlap -- its new period
+# starts later and sorts first. A true newest-subscription order needs a subscription start
+# field on the usage read model (blocks-utilities); that is a follow-up. _id breaks a tie so
+# the order never depends on storage.
+_NEWEST_FIRST = [("PeriodStartUtc", -1), ("_id", -1)]
 
 def _live_status(now: datetime) -> Dict[str, Any]:
     """Active rows, plus trialing rows whose trial has not ended.
@@ -58,7 +67,7 @@ async def get_current_usage_docs(
         **_live_status(now),
         "PeriodStartUtc": {"$lte": now},
         "PeriodEndUtc": {"$gt": now},
-    })
+    }, sort=_NEWEST_FIRST)
     return list(cursor)
 
 
@@ -91,7 +100,7 @@ async def get_scoped_usage_docs(
         **_live_status(now),
         "PeriodStartUtc": {"$lte": now},
         "PeriodEndUtc": {"$gt": now},
-    })
+    }, sort=_NEWEST_FIRST)
     return list(cursor)
 
 
