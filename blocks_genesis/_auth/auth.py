@@ -30,6 +30,8 @@ from blocks_genesis._cache.cache_provider import CacheProvider
 from blocks_genesis._delegation.context import AuthClaimsContext
 from blocks_genesis._database.db_context import DbContext
 from blocks_genesis._lmt.activity import Activity
+from blocks_genesis._core.configuration import is_local_deployment
+from blocks_genesis._middlewares.origin_policy import is_tenant_origin_host
 from blocks_genesis._subscription.context import SubscriptionUsageContext
 from blocks_genesis._subscription.models import UsageResult, UsageSnapshot
 from blocks_genesis._subscription.usage_service import SubscriptionUsageService
@@ -42,6 +44,9 @@ _logger = logging.getLogger(__name__)
 # Names which external identity provider a token came from, for the one case issuer
 # and audience cannot separate: two providers configured with both the same.
 THIRD_PARTY_IDP_HEADER = "x-blocks-idp"
+
+# Methods that only read. A cookie on any other method needs the caller's origin.
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 
@@ -80,6 +85,9 @@ async def _extract_token_from_cookie(request: Request, tenant_service: TenantSer
     1. Tries tenant-specific cookie using application domain
     2. Falls back to third-party token cookie from tenant config
 
+    On a method other than GET, HEAD or OPTIONS a cookie is read only when the
+    Origin or Referer is one of the tenant's application domains.
+
     Returns: (token, is_third_party_token, application_domain)
     """
     # Validate BlocksContext exists with tenant_id
@@ -89,6 +97,16 @@ async def _extract_token_from_cookie(request: Request, tenant_service: TenantSer
 
     # Resolve application domain from request headers (Origin > Referer > Host)
     application_domain = BlocksContextManager.resolve_application_domain(request)
+
+    tenant = None
+    if request.method not in _SAFE_METHODS:
+        # A browser attaches cookies whatever page started the request; without an Origin
+        # or Referer from the tenant's own application, only the Authorization header counts.
+        if not application_domain:
+            return None, False, None
+        tenant = await tenant_service.get_tenant(context.tenant_id)
+        if not tenant or not is_tenant_origin_host(application_domain, tenant):
+            return None, False, None
 
     # Localhost/dev fallback: support loopback equivalents when the cookie was set on a different local host alias.
     local_token = _try_localhost_alias_cookie(request, application_domain)
@@ -102,7 +120,8 @@ async def _extract_token_from_cookie(request: Request, tenant_service: TenantSer
             return token, False, application_domain  # Primary tenant token, not third-party
 
     # 2. Fall back to third-party token cookie
-    tenant = await tenant_service.get_tenant(context.tenant_id)
+    if tenant is None:
+        tenant = await tenant_service.get_tenant(context.tenant_id)
     if not tenant or not tenant.third_party_jwt_token_parameters:
         return None, False, None
 
@@ -120,6 +139,8 @@ async def _extract_token_from_cookie(request: Request, tenant_service: TenantSer
 def _try_localhost_alias_cookie(request: Request, application_domain: Optional[str]) -> Optional[str]:
     """Return a cookie set under a loopback alias when the app domain is a localhost host."""
     if not (application_domain and BlocksContextManager.is_localhost_host(application_domain)):
+        return None
+    if not is_local_deployment():
         return None
     for local_host in ("localhost", "127.0.0.1", "::1"):
         if local_host == application_domain:

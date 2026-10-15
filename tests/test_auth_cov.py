@@ -6,6 +6,14 @@ from blocks_genesis._auth import auth
 AU = 'blocks_genesis._auth.auth.'
 
 
+def _app_tenant(domain='https://app.com'):
+    """A tenant whose application is `domain`, so a cookie from that origin is read."""
+    tenant = MagicMock()
+    app = MagicMock(); app.domain = domain
+    tenant.applications = [app]
+    return tenant
+
+
 def _provider():
     from blocks_genesis._auth.third_party_provider import ThirdPartyJwtProvider
     return ThirdPartyJwtProvider(
@@ -39,13 +47,16 @@ async def test_cookie_no_context(mock_bcm):
 
 @pytest.mark.asyncio
 @patch(AU + 'BlocksContextManager')
-async def test_cookie_localhost_fallback(mock_bcm):
+async def test_cookie_localhost_fallback(mock_bcm, monkeypatch):
+    # The localhost alias cookie is read only in a local deployment.
+    monkeypatch.setattr('blocks_genesis._core.configuration._app_configurations', {'is_local': True})
     ctx = MagicMock(); ctx.tenant_id = 't1'
     mock_bcm.get_context.return_value = ctx
     mock_bcm.resolve_application_domain.return_value = 'localhost'
     mock_bcm.is_localhost_host.return_value = True
     req = MagicMock(); req.cookies.get.side_effect = lambda h: 'tok' if h == '127.0.0.1' else None
-    assert await auth._extract_token_from_cookie(req, MagicMock()) == ('tok', False, 'localhost')
+    ts = MagicMock(); ts.get_tenant = AsyncMock(return_value=_app_tenant())
+    assert await auth._extract_token_from_cookie(req, ts) == ('tok', False, 'localhost')
 
 
 @pytest.mark.asyncio
@@ -56,7 +67,8 @@ async def test_cookie_tenant_specific(mock_bcm):
     mock_bcm.resolve_application_domain.return_value = 'app.com'
     mock_bcm.is_localhost_host.return_value = False
     req = MagicMock(); req.cookies.get.side_effect = lambda h: 'ctok' if h == 'app.com' else None
-    assert await auth._extract_token_from_cookie(req, MagicMock()) == ('ctok', False, 'app.com')
+    ts = MagicMock(); ts.get_tenant = AsyncMock(return_value=_app_tenant())
+    assert await auth._extract_token_from_cookie(req, ts) == ('ctok', False, 'app.com')
 
 
 @pytest.mark.asyncio
@@ -67,7 +79,7 @@ async def test_cookie_third_party(mock_bcm):
     mock_bcm.resolve_application_domain.return_value = 'app.com'
     mock_bcm.is_localhost_host.return_value = False
     req = MagicMock(); req.cookies.get.side_effect = lambda h: 'tp' if h == 'ckey' else None
-    ts = MagicMock(); tenant = MagicMock()
+    ts = MagicMock(); tenant = _app_tenant()
     tenant.third_party_jwt_token_parameters.cookie_key = 'ckey'
     ts.get_tenant = AsyncMock(return_value=tenant)
     assert await auth._extract_token_from_cookie(req, ts) == ('tp', True, 'app.com')
@@ -93,7 +105,7 @@ async def test_cookie_no_cookie_key(mock_bcm):
     mock_bcm.resolve_application_domain.return_value = 'app.com'
     mock_bcm.is_localhost_host.return_value = False
     req = MagicMock(); req.cookies.get.return_value = None
-    ts = MagicMock(); tenant = MagicMock()
+    ts = MagicMock(); tenant = _app_tenant()
     tenant.third_party_jwt_token_parameters.cookie_key = ''
     ts.get_tenant = AsyncMock(return_value=tenant)
     assert await auth._extract_token_from_cookie(req, ts) == (None, False, None)
@@ -107,7 +119,7 @@ async def test_cookie_third_party_token_missing(mock_bcm):
     mock_bcm.resolve_application_domain.return_value = 'app.com'
     mock_bcm.is_localhost_host.return_value = False
     req = MagicMock(); req.cookies.get.return_value = None
-    ts = MagicMock(); tenant = MagicMock()
+    ts = MagicMock(); tenant = _app_tenant()
     tenant.third_party_jwt_token_parameters.cookie_key = 'ckey'
     ts.get_tenant = AsyncMock(return_value=tenant)
     assert await auth._extract_token_from_cookie(req, ts) == (None, False, None)

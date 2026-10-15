@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from opentelemetry.trace import StatusCode
 from blocks_genesis._auth.blocks_context import BlocksContextManager
 from blocks_genesis._lmt.activity import Activity
+from blocks_genesis._middlewares.origin_policy import is_tenant_origin_host
 from blocks_genesis._tenant.tenant import Tenant
 from blocks_genesis._tenant.tenant_service import get_tenant_service
 from blocks_genesis._lmt.redaction import SENSITIVE_KEYS, is_sensitive_key, sanitize_dict  # noqa: F401 - re-exported
@@ -189,27 +190,16 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
                 candidate = url if "://" in url else f"//{url}"
                 parsed = urlparse(candidate)
                 if parsed.hostname:
-                    return parsed.hostname.lower()
+                    host = parsed.hostname.lower()
+                    return host[:-1] if host.endswith(".") else host
             except Exception:
                 pass
             return BlocksContextManager.normalize_domain(url)
 
-        # Allowed domains are derived solely from the tenant's Applications array.
-        # (The legacy tenant.allowed_domains field was removed from the Tenant
-        # model to mirror the blocks-genesis-net Tenant structure.)
-        allowed = [
-            extract_domain(app.domain)
-            for app in (tenant.applications or [])
-            if app.domain
-        ]
-        
         current = (
             extract_domain(request.headers.get("origin") or "")
             or extract_domain(request.headers.get("referer") or "")
         )
 
-        return (
-            not current
-            or BlocksContextManager.is_localhost_host(current)
-            or current in allowed
-        )
+        # Allowed hosts are the tenant's application domains, plus localhost in a local deployment.
+        return not current or is_tenant_origin_host(current, tenant)

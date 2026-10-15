@@ -266,3 +266,25 @@ def test_get_tenant_service_returns_existing():
     sentinel = MagicMock()
     with patch(TS + '_tenant_service', sentinel):
         assert ts.get_tenant_service() is sentinel
+
+@pytest.mark.asyncio
+async def test_get_tenant_by_domain_prefers_verified_in_cache():
+    s = _svc()
+    claimant = Tenant(_id='t1', TenantId='t1', Applications=[{'Domain': 'https://x.com'}])
+    owner = Tenant(_id='t2', TenantId='t2', Applications=[{'Domain': 'https://x.com', 'IsDomainVerified': True}])
+    s._tenant_cache['t1'] = claimant
+    s._tenant_cache['t2'] = owner
+    assert await s.get_tenant_by_domain('x.com') is owner
+
+
+@pytest.mark.asyncio
+async def test_get_tenant_by_domain_queries_verified_first():
+    s = _svc()
+    find_one = AsyncMock(side_effect=[None, {'_id': 't1', 'TenantId': 't1'}])
+    s.database.__getitem__.return_value.find_one = find_one
+    tenant = await s.get_tenant_by_domain('x.com')
+    assert tenant is not None and tenant.tenant_id == 't1'
+    first, second = (c.args[0]['Applications']['$elemMatch'] for c in find_one.await_args_list)
+    assert first['IsDomainVerified'] is True
+    assert 'IsDomainVerified' not in second
+    assert first['Domain'] == second['Domain'] == {'$in': ['http://x.com', 'https://x.com']}

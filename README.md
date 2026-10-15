@@ -330,6 +330,16 @@ load_configurations("config")  # loads config/<APP_ENV>.json, APP_ENV defaults t
 settings = get_configurations()
 ```
 
+### Origin and proxy settings
+
+The two `BLOCKS_` settings are read from the environment first (comma-separated), then from a top-level key of the loaded configuration (a list or comma-separated values).
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `BLOCKS_CORS_ALLOWED_ORIGINS` | none | Origins CORS allows in addition to the tenants' application domains, for example `https://admin.example.com`. |
+| `BLOCKS_TRUSTED_PROXY_HOSTS` | `*` | Hosts (IP addresses or CIDR networks) whose `X-Forwarded-For` and `X-Forwarded-Proto` are trusted. When it is `*` and the service is not local, a warning is logged at startup. |
+| `is_local` | `false` | Configuration key only. `true` marks a local deployment, the only case where `localhost` origins are accepted. A service that never calls `load_configurations` is treated as not local. |
+
 ### Secrets (Azure Key Vault)
 
 At startup, the secret loader fetches the fields of the `BlocksSecret` model from Azure Key Vault. Two things must be in place:
@@ -362,7 +372,7 @@ Secret names resolved from the vault (the fields of `BlocksSecret`):
 
 ## Endpoints and Middleware Added by configure_genesis
 
-`configure_genesis(app, show_docs=False, serve_static=False, static_mount_path="/", static_dir="")` installs, in order: proxy header handling, gzip compression, tenant validation on paths under `/api`, a global exception handler, OpenTelemetry FastAPI instrumentation, and CORS. With `serve_static=True` it also mounts a static directory (default `./static` in the working directory) at `static_mount_path`.
+`configure_genesis(app, show_docs=False, serve_static=False, static_mount_path="/", static_dir="", cors_origins=None)` installs, in order: proxy header handling, gzip compression, tenant validation on paths under `/api`, a global exception handler, OpenTelemetry FastAPI instrumentation, and CORS. With `serve_static=True` it also mounts a static directory (default `./static` in the working directory) at `static_mount_path`.
 
 It registers these routes on the app:
 
@@ -372,7 +382,11 @@ It registers these routes on the app:
 | GET | `/swagger/index.html` | Swagger UI when `show_docs=True`, otherwise the string `NOT_ALLOWED`. |
 | GET | `/openapi.json` | OpenAPI schema when `show_docs=True`, otherwise an empty object. |
 
-Tenant validation applies to requests whose path starts with one of the `included_paths` prefixes (default `/api`). The tenant is resolved from the `x-blocks-key` header, the `x-blocks-key` or `tenant_id` query parameter, or the request domain. Requests with an unknown or disabled tenant are rejected, as are requests whose `Origin`/`Referer` domain is not registered for the tenant.
+Tenant validation applies to requests whose path starts with one of the `included_paths` prefixes (default `/api`). The tenant is resolved from the `x-blocks-key` header, the `x-blocks-key` or `tenant_id` query parameter, or the request domain. Requests with an unknown or disabled tenant are rejected, as are requests whose `Origin`/`Referer` domain is not registered for the tenant. A `localhost` origin is accepted only when `is_local` is true. A request with neither header passes this check.
+
+CORS allows an origin when it is in `cors_origins` or `BLOCKS_CORS_ALLOWED_ORIGINS`, when it is an application domain of an enabled tenant, or when it is `localhost` and `is_local` is true. An allowed origin is echoed back, never `*`, with `Access-Control-Allow-Credentials: true` and `Vary: Origin`. Any other origin gets no CORS headers, and its preflight gets 400. Every response carries `Vary: Origin`. A tenant-domain decision is cached for 60 s when allowed and 10 s when refused, and at most 20 uncached lookups run per second per process; beyond that an unknown origin is refused. Preflight requests are answered before tenant validation, so they need no `x-blocks-key`.
+
+The `Authorization: Bearer` header is always accepted. A token in a cookie is read on GET, HEAD and OPTIONS as before; on any other method it is read only when the `Origin` or `Referer` is one of the tenant's application domains (or `localhost` when `is_local` is true). The `localhost` alias cookie is read only when `is_local` is true.
 
 ## Sample Application
 
