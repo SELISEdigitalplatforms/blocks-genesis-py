@@ -25,6 +25,8 @@ class RedisClient(CacheClient):
         """Initialize Redis client"""
         self._blocks_secret = get_blocks_secret()
         self._connection_string = self._blocks_secret.CacheConnectionString
+        if not self._connection_string or not self._connection_string.strip():
+            raise ValueError("CacheConnectionString is not configured")
         self._subscriptions: Dict[str, Callable] = {}
         self._disposed = False
         self._pubsub_tasks: Dict[str, asyncio.Task] = {}

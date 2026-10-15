@@ -382,6 +382,8 @@ Secret names resolved from the vault (the fields of `BlocksSecret`):
 | `DatabaseConnectionString` | Root tenant metadata database connection string. |
 | `RootDatabaseName` | Root database containing tenant and authorization metadata. |
 
+Startup fails when `CacheConnectionString`, `DatabaseConnectionString`, or `RootDatabaseName` is missing or empty; the error names the missing secrets, never their values.
+
 ## Endpoints and Middleware Added by configure_genesis
 
 `configure_genesis(app, show_docs=False, serve_static=False, static_mount_path="/", static_dir="", cors_origins=None)` installs, in order: proxy header handling, gzip compression, tenant validation on paths under `/api`, a global exception handler, OpenTelemetry FastAPI instrumentation, and CORS. With `serve_static=True` it also mounts a static directory (default `./static` in the working directory) at `static_mount_path`.
