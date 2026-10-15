@@ -424,6 +424,65 @@ async def test_an_invalid_blocks_token_is_a_401_not_a_500():
 
 
 @pytest.mark.asyncio
+async def test_a_key_error_in_primary_validation_is_a_401_not_a_500():
+    """PyJWT's InvalidKeyError is not an InvalidTokenError, so it used to escape as a 500."""
+    from fastapi import HTTPException
+    from jwt.exceptions import InvalidKeyError
+
+    prim, fall, raised = await _authenticate(
+        _request(), _tenant(enabled=False), primary=InvalidKeyError("wrong key type"),
+    )
+
+    assert isinstance(raised, HTTPException)
+    assert raised.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_an_ec_certificate_against_rs256_is_a_401_not_a_500():
+    """The tenant's certificate holds an EC key, but primary validation pins RS256."""
+    import datetime
+
+    import jwt
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec, rsa
+    from cryptography.x509.oid import NameOID
+    from fastapi import HTTPException
+    from blocks_genesis._tenant.tenant import JwtTokenParameters
+
+    ec_key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "tenant.example")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(ec_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=365))
+        .sign(ec_key, hashes.SHA256())
+    )
+    tenant = _tenant(enabled=False)
+    tenant.jwt_token_parameters = JwtTokenParameters(Issuer="blocks", Audiences=["api"])
+    token = jwt.encode(
+        {"iss": "blocks", "aud": "api", "iat": now, "nbf": now, "exp": now + datetime.timedelta(minutes=5)},
+        rsa.generate_private_key(public_exponent=65537, key_size=2048),
+        algorithm="RS256",
+    )
+
+    with patch.object(auth, "_resolve_signing_tenant", new_callable=AsyncMock, return_value=tenant), \
+         patch.object(auth, "get_tenant_cert", new_callable=AsyncMock,
+                      return_value=certificate.public_bytes(serialization.Encoding.PEM)):
+        with pytest.raises(HTTPException) as raised:
+            await auth._validate_authenticated_token(
+                token, False, tenant, "ABC001", MagicMock(), _request(), MagicMock()
+            )
+
+    assert raised.value.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_the_trace_flag_reports_the_real_outcome():
     """A bearer external token is not flagged third-party at extraction time, so the
     flag has to come from what actually validated it."""

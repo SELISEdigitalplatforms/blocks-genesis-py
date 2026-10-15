@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from fastapi import Request, HTTPException, Depends
 import jwt
 from jwt import ExpiredSignatureError, InvalidTokenError
+from jwt.exceptions import InvalidKeyError
 from cryptography import x509
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.hazmat.primitives import serialization
@@ -389,10 +390,11 @@ async def _validate_authenticated_token(
 
     try:
         return await validate_jwt_token(token, signing_tenant, cache_client, request), None
-    except InvalidTokenError as err:
+    except (InvalidTokenError, InvalidKeyError) as err:
         # PyJWT's own error, not an HTTPException. Letting it escape turned a bad
         # signature into a 500, and -- before the opt-in routing above -- stopped a
-        # bearer third-party token ever reaching the provider path.
+        # bearer third-party token ever reaching the provider path. InvalidKeyError
+        # (a certificate key that does not fit RS256) is not an InvalidTokenError.
         security_log(
             "authentication_failed",
             "Primary token validation failed.",

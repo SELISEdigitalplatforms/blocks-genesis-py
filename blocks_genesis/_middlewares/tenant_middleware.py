@@ -13,7 +13,9 @@ from blocks_genesis._tenant.tenant import Tenant
 from blocks_genesis._tenant.tenant_service import get_tenant_service
 from blocks_genesis._lmt.redaction import SENSITIVE_KEYS, is_sensitive_key, sanitize_dict  # noqa: F401 - re-exported
 import json
+import logging
 
+_logger = logging.getLogger(__name__)
 
 async def tee_body_iterator(
     iterator: AsyncIterator[bytes],
@@ -111,7 +113,8 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
 
         Returns the validated Tenant, or a rejection Response when the tenant
         key/id is missing on a localhost request, the application is not found
-        or disabled, or the origin/referer is not allowed.
+        or disabled, or the origin/referer is not allowed. The last two get the
+        same 404, so a caller cannot tell whether a key exists.
         """
         api_key = request.headers.get("x-blocks-key") or request.query_params.get("x-blocks-key") or request.query_params.get("tenant_id")
         tenant_service = get_tenant_service()
@@ -131,7 +134,10 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
             return self._reject(404, "Not_Found: Application_Not_Found")
 
         if not self._is_valid_origin_or_referer(request, tenant):
-            return self._reject(406, "NotAcceptable: Invalid_Origin_Or_Referer")
+            # Answered exactly like an unknown tenant, so the response does not reveal
+            # whether the key exists. The real reason is only logged.
+            _logger.debug("Tenant %s refused: origin or referer is not allowed", tenant.tenant_id)
+            return self._reject(404, "Not_Found: Application_Not_Found")
 
         return tenant
 

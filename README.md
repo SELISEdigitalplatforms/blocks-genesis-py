@@ -323,6 +323,7 @@ Notes:
 - `get_tenant_service().get_root_tenant_id_async()` returns the root tenant's id, read from the root database (loaded once at startup, or on first call if that load failed); the sync `get_root_tenant_id()` returns the same stored id. Tenant updates on the cache channel never change it.
 - A tenant update on the cache channel only names the tenant: each process re-reads that tenant from the root database and never applies the message's own fields. A tenant missing or disabled there is dropped; if the read fails, the process keeps its current copy.
 - Each process re-reads a cached tenant from the root database once it is a minute old; a tenant that is missing or disabled there is dropped, and if the read fails the current copy is kept for another minute. A disabled tenant is treated as unknown, and an unknown tenant key or domain is remembered for 30 seconds. Revalidation costs one root-database read per cached tenant per minute in each process, and on RabbitMQ a message whose tenant cannot be read is acknowledged and logged rather than retried (Azure Service Bus retries it).
+- The subscription usage helpers (`subscription_usage_snapshot`, `resolve_subscription_usage`, `resolve_subscription_usage_snapshot`) fail open: on any read error they leave the snapshot empty (`None`) and do not refuse the request. Decide in your own code what an empty snapshot means.
 - `MessageConfiguration.resolve_provider()` auto-selects RabbitMQ for `amqp://`/`amqps://` connection strings and Azure Service Bus otherwise, when neither sub-configuration is set explicitly.
 
 ## Configuration
@@ -364,6 +365,7 @@ Token signing keys and certificates are downloaded under these rules:
 - A token from a tenant's own identity provider must carry `exp`. Up to 5 minutes of clock difference is allowed, as in blocks-genesis-net.
 - Claims Genesis sets itself are removed from a provider's token before anything reads it: tenant, user, organization, roles, permissions, impersonation, client, session, phone, `oauth`, `request_uri`, `token_version` and `security_stamp`. A message sent for a third-party caller therefore carries no delegation grant built from the provider's values.
 - A provider with no `Issuer`, no `Audiences`, or still on the `default` organization is accepted, as in blocks-genesis-net, and a `[Security]` warning names it once per process.
+- Providers that share an issuer and audience are told apart only by the `x-blocks-idp` header, which the caller chooses. Give such providers equal privilege.
 
 ### Secrets (Azure Key Vault)
 
@@ -399,7 +401,7 @@ Startup fails when `CacheConnectionString`, `DatabaseConnectionString`, or `Root
 
 ## Endpoints and Middleware Added by configure_genesis
 
-`configure_genesis(app, show_docs=False, serve_static=False, static_mount_path="/", static_dir="", cors_origins=None)` installs, in order: proxy header handling, gzip compression, tenant validation on paths under `/api`, a global exception handler, OpenTelemetry FastAPI instrumentation, and CORS. With `serve_static=True` it also mounts a static directory (default `./static` in the working directory) at `static_mount_path`.
+`configure_genesis(app, show_docs=False, serve_static=False, static_mount_path="/", static_dir="", cors_origins=None)` installs, in order: proxy header handling, gzip compression, tenant validation on paths under `/api`, a global exception handler, OpenTelemetry FastAPI instrumentation, and CORS. With `serve_static=True` it also mounts a static directory (default `./static` in the working directory) at `static_mount_path`, after its own routes, so a mount at `/` does not hide them.
 
 It registers these routes on the app:
 
@@ -411,7 +413,7 @@ It registers these routes on the app:
 
 The API docs routes are off unless `show_docs=True`: with the default `show_docs=False`, FastAPI's own `openapi_url`, `docs_url`, `redoc_url` and Swagger OAuth2 redirect routes are removed as well, so every docs path answers 404.
 
-Tenant validation applies to requests whose path starts with one of the `included_paths` prefixes (default `/api`). The tenant is resolved from the `x-blocks-key` header, the `x-blocks-key` or `tenant_id` query parameter, or the request domain. Requests with an unknown or disabled tenant are rejected, as are requests whose `Origin`/`Referer` domain is not registered for the tenant. A `localhost` origin is accepted only when `is_local` is true. A request with neither header passes this check.
+Tenant validation applies to requests whose path starts with one of the `included_paths` prefixes (default `/api`). The tenant is resolved from the `x-blocks-key` header, the `x-blocks-key` or `tenant_id` query parameter, or the request domain. Requests with an unknown or disabled tenant are rejected, as are requests whose `Origin`/`Referer` domain is not registered for the tenant. Both get the same 404, so the response does not reveal whether a tenant key exists. A `localhost` origin is accepted only when `is_local` is true. A request with neither header passes this check.
 
 CORS allows an origin when it is in `cors_origins` or `BLOCKS_CORS_ALLOWED_ORIGINS`, when it is an application domain of an enabled tenant, or when it is `localhost` and `is_local` is true. An allowed origin is echoed back, never `*`, with `Access-Control-Allow-Credentials: true` and `Vary: Origin`. Any other origin gets no CORS headers, and its preflight gets 400. Every response carries `Vary: Origin`. A tenant-domain decision is cached for 60 s when allowed and 10 s when refused, and at most 20 uncached lookups run per second per process; beyond that an unknown origin is refused. Preflight requests are answered before tenant validation, so they need no `x-blocks-key`.
 

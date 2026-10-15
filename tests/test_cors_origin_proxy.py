@@ -373,10 +373,11 @@ async def _dispatch(monkeypatch, headers):
 
 
 @pytest.mark.asyncio
-async def test_api_localhost_origin_outside_local_gets_406(monkeypatch):
+async def test_api_localhost_origin_outside_local_gets_404(monkeypatch):
     monkeypatch.setattr(CFG, {"is_local": False})
     response, call_next = await _dispatch(monkeypatch, {"x-blocks-key": "t1", "Origin": "http://localhost:3000"})
-    assert response.status_code == 406
+    # Answered as an unknown tenant, so the response does not reveal that the key exists.
+    assert response.status_code == 404
     call_next.assert_not_awaited()
 
 

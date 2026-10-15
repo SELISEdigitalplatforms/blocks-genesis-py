@@ -147,6 +147,7 @@ def configure_genesis(app: FastAPI, show_docs: bool = False, serve_static: bool 
     app.add_middleware(GenesisCORSMiddleware, allowed_origins=list(cors_origins or []))
     if not show_docs:
         _remove_docs_routes(app)
+    resolved_static_dir = None
     if serve_static:
         # Determine the static directory in a robust, pythonic way
         if static_dir:
@@ -158,11 +159,6 @@ def configure_genesis(app: FastAPI, show_docs: bool = False, serve_static: bool 
         if not resolved_static_dir.exists() or not resolved_static_dir.is_dir():
             raise FileNotFoundError(f"Static directory '{resolved_static_dir}' does not exist. Please create it or specify a valid static_dir.")
 
-        app.mount(
-            static_mount_path,
-            StaticFiles(directory=str(resolved_static_dir), html=True),
-            name="static"
-        )
     @app.get("/ping", include_in_schema=False)
     async def health():
         return {
@@ -182,3 +178,11 @@ def configure_genesis(app: FastAPI, show_docs: bool = False, serve_static: bool 
         if show_docs:
             return get_openapi(title=app.title, version=app.version, routes=app.routes)
         raise HTTPException(status_code=404)
+    if resolved_static_dir is not None:
+        # Mounted after the routes above: a mount at "/" matches every path, so routes
+        # registered after it would never be reached.
+        app.mount(
+            static_mount_path,
+            StaticFiles(directory=str(resolved_static_dir), html=True),
+            name="static"
+        )
