@@ -28,6 +28,10 @@ from blocks_genesis._message.security_context_header import (
     SECURITY_CONTEXT_INVALID,
     parse_security_context_header,
 )
+from blocks_genesis._message.tenant_check import (
+    TENANT_UNAVAILABLE_DEAD_LETTER_REASON,
+    check_message_tenant,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +231,17 @@ class AzureMessageWorker:
                         message,
                         reason=INVALID_SECURITY_CONTEXT_DEAD_LETTER_REASON,
                         error_description=SECURITY_CONTEXT_INVALID,
+                    )
+                    return
+
+                tenant_refusal = await check_message_tenant(BlocksContextManager.get_context(), message_id)
+                if tenant_refusal:
+                    # Final, so not abandoned. The grant is kept; its TTL removes it.
+                    span.set_status(Status(StatusCode.ERROR, tenant_refusal))
+                    await receiver.dead_letter_message(
+                        message,
+                        reason=TENANT_UNAVAILABLE_DEAD_LETTER_REASON,
+                        error_description=tenant_refusal,
                     )
                     return
 

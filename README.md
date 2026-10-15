@@ -199,6 +199,11 @@ dead-letters the message with reason `InvalidSecurityContext`, and RabbitMQ acks
 error. Neither the header nor the parse error is logged. A missing or empty header (`""` or `{}`)
 still runs the handler with no context.
 
+A message whose `SecurityContext` names a tenant that is missing or disabled is refused the same
+way, before the grant is checked: Azure Service Bus dead-letters it with reason `TenantUnavailable`,
+and RabbitMQ acks it and logs an error. If the tenant cannot be read, the message takes the normal
+failure path.
+
 The wire format is identical to `blocks-genesis-net` — grant id shape, signature input, Redis keys,
 JSON field names, header names — and a shared conformance vector is asserted in both SDKs.
 
@@ -317,6 +322,7 @@ Notes:
 - `authorize(resource_name, bypass_authorization=False)` returns a FastAPI dependency. `resource_name` is required unless `bypass_authorization=True`; a missing name on a protected endpoint raises `ValueError` at route definition time.
 - `get_tenant_service().get_root_tenant_id_async()` returns the root tenant's id, read from the root database (loaded once at startup, or on first call if that load failed); the sync `get_root_tenant_id()` returns the same stored id. Tenant updates on the cache channel never change it.
 - A tenant update on the cache channel only names the tenant: each process re-reads that tenant from the root database and never applies the message's own fields. A tenant missing or disabled there is dropped; if the read fails, the process keeps its current copy.
+- Each process re-reads a cached tenant from the root database once it is a minute old; a tenant that is missing or disabled there is dropped, and if the read fails the current copy is kept for another minute. A disabled tenant is treated as unknown, and an unknown tenant key or domain is remembered for 30 seconds. Revalidation costs one root-database read per cached tenant per minute in each process, and on RabbitMQ a message whose tenant cannot be read is acknowledged and logged rather than retried (Azure Service Bus retries it).
 - `MessageConfiguration.resolve_provider()` auto-selects RabbitMQ for `amqp://`/`amqps://` connection strings and Azure Service Bus otherwise, when neither sub-configuration is set explicitly.
 
 ## Configuration

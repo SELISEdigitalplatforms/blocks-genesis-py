@@ -49,6 +49,9 @@ def _svc(find_one=None):
     s._disposed = False
     s._initialize_lock = asyncio.Lock()
     s._tenant_load_lock = asyncio.Lock()
+    s._tenant_loaded_at = {}
+    s._unknown_tenants = {}
+    s._unknown_domains = {}
     return s
 
 

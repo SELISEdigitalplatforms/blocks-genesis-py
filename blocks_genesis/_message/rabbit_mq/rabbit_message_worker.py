@@ -24,6 +24,7 @@ from blocks_genesis._message.security_context_header import (
     SECURITY_CONTEXT_INVALID,
     parse_security_context_header,
 )
+from blocks_genesis._message.tenant_check import check_message_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +175,12 @@ class RabbitMessageWorker:
                         # logged: either can carry personal data.
                         logger.error("Message %s not handled: %s", message.message_id, SECURITY_CONTEXT_INVALID)
                         span.set_status(StatusCode.ERROR, SECURITY_CONTEXT_INVALID)
+                        return
+
+                    tenant_refusal = await check_message_tenant(BlocksContextManager.get_context(), message.message_id)
+                    if tenant_refusal:
+                        # Acked like any other message, without a release: the grant's TTL removes it.
+                        span.set_status(StatusCode.ERROR, tenant_refusal)
                         return
 
                     refusal = await check_grant_binding(

@@ -1,5 +1,7 @@
 import asyncio
+import hashlib
 import logging
+import time
 from typing import Dict, Optional, Tuple
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
@@ -10,6 +12,25 @@ from blocks_genesis._core.secret_loader import get_blocks_secret
 from blocks_genesis._tenant.tenant import Tenant
 
 _logger = logging.getLogger(__name__)
+
+# The interval blocks-genesis-net uses (Tenants.cs TokenParameterRevalidationInterval).
+TENANT_REVALIDATION_INTERVAL_SECONDS = 60
+UNKNOWN_TENANT_TTL_SECONDS = 30
+UNKNOWN_TENANT_CACHE_MAX_ENTRIES = 4096
+
+
+def _unknown_key(value: str) -> bytes:
+    # A tenant key or host comes from the request, so only a fixed-size digest is kept.
+    return hashlib.sha256(value.encode("utf-8", "surrogatepass")).digest()
+
+
+def _normalize_domain(d: str) -> str:
+    d = d.strip().lower()
+    if d.startswith("http://"):
+        d = d[7:]
+    elif d.startswith("https://"):
+        d = d[8:]
+    return d
 
 
 class TenantCacheUpdateMessage(BaseModel):
@@ -22,10 +43,15 @@ class TenantCacheUpdateMessage(BaseModel):
         validate_by_name = True
 
 
+class TenantReadError(Exception):
+    """The root database could not be read and this process has no copy of the tenant."""
+
+
 class TenantService:
     """Manages tenant configuration with caching and real-time updates"""
     TENANT_CACHE_UPDATE_ACTION_UPSERT = "upsert"
     TENANT_CACHE_UPDATE_ACTION_REMOVE = "remove"
+    _clock = staticmethod(time.monotonic)
 
     def __init__(self):
         self._blocks_secret = get_blocks_secret()
@@ -39,6 +65,9 @@ class TenantService:
         self._tenant_cache: Dict[str, Tenant] = {}
         self._root_tenant_id: Optional[str] = None
         self._tenant_load_in_progress: Dict[str, asyncio.Task] = {}
+        self._tenant_loaded_at: Dict[str, float] = {}
+        self._unknown_tenants: Dict[bytes, float] = {}
+        self._unknown_domains: Dict[bytes, float] = {}
         self._update_channel = "tenant::updates"
         self._collection_name = "Tenants"
 
@@ -74,28 +103,56 @@ class TenantService:
 
     
     async def get_tenant(self, tenant_id: str) -> Optional[Tenant]:
+        """The tenant if it exists and is enabled; None otherwise, including when it cannot be read."""
+        try:
+            return await self.resolve_tenant(tenant_id)
+        except TenantReadError:
+            return None
+
+    async def resolve_tenant(self, tenant_id: str) -> Optional[Tenant]:
+        """Like get_tenant, but raises TenantReadError when the root database cannot be read
+        and this process has no copy of the tenant."""
         if not tenant_id:
             return None
         tenant = self._tenant_cache.get(tenant_id)
-        if tenant:
+        if tenant is not None and not self._is_stale(tenant_id):
             return tenant
+        if tenant is None and self._is_known_unknown(self._unknown_tenants, tenant_id):
+            return None
 
-        # Deduplicate concurrent DB lookups for the same tenant id.
+        # One database read per tenant at a time, for a cold load and a revalidation alike.
         async with self._tenant_load_lock:
             tenant_task = self._tenant_load_in_progress.get(tenant_id)
             if tenant_task is None:
-                tenant_task = asyncio.create_task(self._load_tenant_from_db(tenant_id))
+                tenant_task = asyncio.create_task(self._refresh_tenant(tenant_id))
                 self._tenant_load_in_progress[tenant_id] = tenant_task
-
         try:
-            tenant = await tenant_task
+            # Shielded: a cancelled caller must not cancel the read the other callers share.
+            return await asyncio.shield(tenant_task)
         finally:
             async with self._tenant_load_lock:
                 if self._tenant_load_in_progress.get(tenant_id) is tenant_task:
                     self._tenant_load_in_progress.pop(tenant_id, None)
 
-        if tenant:
-            self._tenant_cache[tenant.tenant_id] = tenant
+    async def _refresh_tenant(self, tenant_id: str) -> Optional[Tenant]:
+        try:
+            tenant = await self._find_tenant(tenant_id)
+        except Exception as e:
+            cached = self._tenant_cache.get(tenant_id)
+            _logger.warning(
+                "Tenant %r could not be read (%s)%s",
+                tenant_id[:64], type(e).__name__, "; keeping the cached copy" if cached else "",
+            )
+            if cached is None:
+                raise TenantReadError(tenant_id[:64]) from None
+            # Try again one interval later rather than on every request while the database is down.
+            self._tenant_loaded_at[tenant_id] = self._clock()
+            return cached
+        if tenant is None or tenant.is_disabled:
+            self._drop_tenant(tenant_id, *([tenant.tenant_id] if tenant else []))
+            self._remember_unknown(self._unknown_tenants, tenant_id)
+            return None
+        self._cache_tenant(tenant)
         return tenant
 
     async def get_tenant_by_domain(self, domain: str) -> Optional[Tenant]:
@@ -103,29 +160,18 @@ class TenantService:
         if not domain or not domain.strip():
             return None
 
-        # Normalize domain (strip, lowercase, remove protocol if present)
-        def normalize_domain(d):
-            d = d.strip().lower()
-            if d.startswith("http://"):
-                d = d[7:]
-            elif d.startswith("https://"):
-                d = d[8:]
-            return d
-
-        normalized = normalize_domain(domain)
+        normalized = _normalize_domain(domain)
         domains = [f"http://{normalized}", f"https://{normalized}"]
 
-        # Check in-memory cache first. A tenant that verified the domain wins over one that only claims it.
-        matches = []
-        for tenant in self._tenant_cache.values():
-            apps = [
-                app for app in (tenant.applications or [])
-                if app.domain and normalize_domain(app.domain) == normalized
-            ]
-            if apps:
-                matches.append((tenant, any(app.is_domain_verified for app in apps)))
-        if matches:
-            return next((t for t, verified in matches if verified), matches[0][0])
+        match = self._match_domain_in_cache(normalized)
+        if match is not None and self._is_stale(match.tenant_id):
+            # Re-read by id: afterwards it is fresh, or gone if missing or disabled.
+            await self.get_tenant(match.tenant_id)
+            match = self._match_domain_in_cache(normalized)
+        if match is not None:
+            return match
+        if self._is_known_unknown(self._unknown_domains, normalized):
+            return None
 
         # Query database if not found in cache, verified owner first
         try:
@@ -141,10 +187,27 @@ class TenantService:
             })
             if tenant_dict:
                 tenant = Tenant(**tenant_dict)
-                self._tenant_cache[tenant.tenant_id] = tenant
-                return tenant
+                if not tenant.is_disabled:
+                    self._cache_tenant(tenant)
+                    return tenant
         except Exception as e:
             _logger.exception(f"Error getting tenant by domain {domain}: {e}")
+            return None
+        self._remember_unknown(self._unknown_domains, normalized)
+        return None
+
+    def _match_domain_in_cache(self, normalized: str) -> Optional[Tenant]:
+        # A tenant that verified the domain wins over one that only claims it.
+        matches = []
+        for tenant in self._tenant_cache.values():
+            apps = [
+                app for app in (tenant.applications or [])
+                if app.domain and _normalize_domain(app.domain) == normalized
+            ]
+            if apps:
+                matches.append((tenant, any(app.is_domain_verified for app in apps)))
+        if matches:
+            return next((t for t, verified in matches if verified), matches[0][0])
         return None
 
     async def get_db_connection(self, tenant_id: str) -> Tuple[Optional[str], Optional[str]]:
@@ -205,12 +268,34 @@ class TenantService:
         })
         return Tenant(**tenant_dict) if tenant_dict else None
 
-    async def _load_tenant_from_db(self, tenant_id: str) -> Optional[Tenant]:
-        try:
-            return await self._find_tenant(tenant_id)
-        except Exception as e:
-            _logger.exception(f"Error loading tenant {tenant_id}: {e}")
-        return None
+    def _is_stale(self, tenant_id: str) -> bool:
+        loaded = self._tenant_loaded_at.get(tenant_id)
+        return loaded is not None and self._clock() - loaded >= TENANT_REVALIDATION_INTERVAL_SECONDS
+
+    def _cache_tenant(self, tenant: Tenant) -> None:
+        self._tenant_cache[tenant.tenant_id] = tenant
+        self._tenant_loaded_at[tenant.tenant_id] = self._clock()
+        self._unknown_tenants.pop(_unknown_key(tenant.tenant_id), None)
+
+    def _drop_tenant(self, *tenant_ids: str) -> None:
+        for tenant_id in tenant_ids:
+            self._tenant_cache.pop(tenant_id, None)
+            self._tenant_loaded_at.pop(tenant_id, None)
+
+    def _remember_unknown(self, entries: Dict[bytes, float], value: str) -> None:
+        if len(entries) >= UNKNOWN_TENANT_CACHE_MAX_ENTRIES:
+            entries.clear()
+        entries[_unknown_key(value)] = self._clock() + UNKNOWN_TENANT_TTL_SECONDS
+
+    def _is_known_unknown(self, entries: Dict[bytes, float], value: str) -> bool:
+        key = _unknown_key(value)
+        expires = entries.get(key)
+        if expires is None:
+            return False
+        if self._clock() >= expires:
+            del entries[key]
+            return False
+        return True
     
     async def update_tenant_version_async(self, cache_update: TenantCacheUpdateMessage) -> None:
         if cache_update is None:
@@ -284,7 +369,7 @@ class TenantService:
             return
 
         if action == self.TENANT_CACHE_UPDATE_ACTION_REMOVE:
-            self._tenant_cache.pop(tenant_id, None)
+            self._drop_tenant(tenant_id)
             _logger.info("Tenant %r removed from cache", tenant_id[:64])
             return
 
@@ -303,13 +388,16 @@ class TenantService:
             return
 
         if tenant is None or tenant.is_disabled:
-            self._tenant_cache.pop(tenant_id, None)
-            if tenant is not None:
-                self._tenant_cache.pop(tenant.tenant_id, None)
+            self._drop_tenant(tenant_id, *([tenant.tenant_id] if tenant else []))
+            self._remember_unknown(self._unknown_tenants, tenant_id)
             _logger.info("Tenant %r removed from cache (missing or disabled)", tenant_id[:64])
             return
 
-        self._tenant_cache[tenant.tenant_id] = tenant
+        self._cache_tenant(tenant)
+        # The requested id may differ from the stored TenantId (matched on _id).
+        self._unknown_tenants.pop(_unknown_key(tenant_id), None)
+        # A new or changed tenant may own a domain that was unknown.
+        self._unknown_domains.clear()
         _logger.info("Tenant %r refreshed from the database", tenant_id[:64])
 
     async def _subscribe_to_updates(self):

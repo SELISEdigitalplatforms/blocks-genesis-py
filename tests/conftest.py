@@ -41,6 +41,19 @@ def empty_certificate_cache():
     auth._certificate_cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def available_message_tenant(monkeypatch):
+    """Workers look up the message's tenant; by default it exists and is enabled."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from blocks_genesis._message import tenant_check
+    from blocks_genesis._tenant.tenant import Tenant
+
+    tenant = Tenant(_id="tenant-1", TenantId="tenant-1")
+    service = MagicMock(resolve_tenant=AsyncMock(return_value=tenant))
+    monkeypatch.setattr(tenant_check, "get_tenant_service", lambda: service)
+
+
 @pytest.fixture(scope="session")
 def valid_cert_pem():
     """A self-signed PEM certificate valid from yesterday for a year."""

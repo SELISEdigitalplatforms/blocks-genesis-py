@@ -21,6 +21,9 @@ def _svc():
     s._disposed = False
     s._initialize_lock = asyncio.Lock()
     s._tenant_load_lock = asyncio.Lock()
+    s._tenant_loaded_at = {}
+    s._unknown_tenants = {}
+    s._unknown_domains = {}
     return s
 
 
@@ -52,14 +55,14 @@ async def test_get_tenant_cache_hit():
 @pytest.mark.asyncio
 async def test_get_tenant_loads_and_caches():
     s = _svc(); t = _t('t1')
-    s._load_tenant_from_db = AsyncMock(return_value=t)
+    s._find_tenant = AsyncMock(return_value=t)
     assert await s.get_tenant('t1') is t
     assert s._tenant_cache['t1'] is t
 
 
 @pytest.mark.asyncio
 async def test_get_tenant_load_returns_none():
-    s = _svc(); s._load_tenant_from_db = AsyncMock(return_value=None)
+    s = _svc(); s._find_tenant = AsyncMock(return_value=None)
     assert await s.get_tenant('t1') is None
 
 
@@ -107,14 +110,15 @@ def test_get_tenant_database_connection_strings():
 
 
 @pytest.mark.asyncio
-async def test_load_tenant_from_db_hit_none_exception():
+async def test_find_tenant_hit_none_raises():
     s = _svc()
     s.database.__getitem__.return_value.find_one = AsyncMock(return_value={'_id': 't1', 'TenantId': 't1'})
-    assert await s._load_tenant_from_db('t1') is not None
+    assert isinstance(await s._find_tenant('t1'), Tenant)
     s.database.__getitem__.return_value.find_one = AsyncMock(return_value=None)
-    assert await s._load_tenant_from_db('t1') is None
+    assert await s._find_tenant('t1') is None
     s.database.__getitem__.return_value.find_one = AsyncMock(side_effect=Exception('x'))
-    assert await s._load_tenant_from_db('t1') is None
+    with pytest.raises(Exception, match='x'):
+        await s._find_tenant('t1')
 
 
 @pytest.mark.asyncio
