@@ -340,6 +340,17 @@ The two `BLOCKS_` settings are read from the environment first (comma-separated)
 | `BLOCKS_TRUSTED_PROXY_HOSTS` | `*` | Hosts (IP addresses or CIDR networks) whose `X-Forwarded-For` and `X-Forwarded-Proto` are trusted. When it is `*` and the service is not local, a warning is logged at startup. |
 | `is_local` | `false` | Configuration key only. `true` marks a local deployment, the only case where `localhost` origins are accepted. A service that never calls `load_configurations` is treated as not local. |
 
+### Signing key fetching
+
+Token signing keys and certificates are downloaded under these rules:
+
+- Only `https` URLs are fetched. `http` is accepted only when `is_local` is `true`.
+- Redirects are not followed. Each download has a 5 s timeout and a 1 MiB size limit.
+- A third-party provider's `JwksUrl` or `PublicCertificatePath` must resolve only to public addresses. Private, loopback, link-local (including the cloud metadata address), multicast and reserved addresses are refused, in local mode too. File paths are refused for providers.
+- The primary tenant certificate, which the platform writes, may be a file path or an internal address.
+- A JWKS is cached for 10 minutes per URL. A token with an unknown key id refreshes it at most once a minute. If a refresh fails, the last good keys are used for at most 1 hour past the 10 minutes.
+- A certificate outside its validity dates is rejected. Certificates are cached for at most 1 hour, and never past their expiry.
+
 ### Secrets (Azure Key Vault)
 
 At startup, the secret loader fetches the fields of the `BlocksSecret` model from Azure Key Vault. Two things must be in place:

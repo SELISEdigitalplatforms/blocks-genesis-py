@@ -1,5 +1,6 @@
 """Logs and traces carry metadata, never bodies, credentials or grant ids (#42)."""
 
+import datetime
 import json
 import logging
 import re
@@ -556,6 +557,8 @@ async def test_blocks_token_request_uri_is_path_only(mock_get_cert, mock_create_
     mock_get_cert.return_value = b"b"
     cert = MagicMock()
     cert.public_key.return_value.public_bytes.return_value.decode.return_value = "pem"
+    cert.not_valid_before_utc = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
+    cert.not_valid_after_utc = datetime.datetime(2999, 1, 1, tzinfo=datetime.timezone.utc)
     mock_create_cert.return_value = cert
     mock_jwt.decode.return_value = {"sub": "u1"}
     request = MagicMock()

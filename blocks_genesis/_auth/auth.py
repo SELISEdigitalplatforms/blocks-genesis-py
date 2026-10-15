@@ -1,13 +1,14 @@
+import hashlib
 import json
 import logging
 import asyncio
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 from fastapi import Request, HTTPException, Depends
-import aiohttp
 import jwt
-from jwt import PyJWKClient, ExpiredSignatureError, InvalidTokenError
+from jwt import ExpiredSignatureError, InvalidTokenError
 from cryptography import x509
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.hazmat.primitives import serialization
@@ -17,6 +18,12 @@ from blocks_genesis._auth.jwt_signing_algorithm import (
     is_single_key_source,
     is_symmetric,
     to_wire_names,
+)
+from blocks_genesis._auth.key_fetch import (
+    MAX_RESPONSE_BYTES,
+    KeyFetchError,
+    fetch_key_material,
+    get_jwks_cache,
 )
 from blocks_genesis._auth.security_log import security_log
 from blocks_genesis._auth.third_party_provider import ThirdPartyJwtProvider
@@ -155,19 +162,24 @@ def _try_localhost_alias_cookie(request: Request, application_domain: Optional[s
 # CERTIFICATE HANDLING
 # ============================================================================
 
-async def fetch_cert_bytes(cert_url: str) -> bytes:
-    if cert_url.startswith("http"):
-        async with aiohttp.ClientSession() as session:
-            async with session.get(cert_url) as resp:
-                resp.raise_for_status()
-                return await resp.read()
-    else:
-        loop = asyncio.get_running_loop()
-        try:
-            with open(cert_url, "rb") as f:
-                return await loop.run_in_executor(None, f.read)
-        except Exception as e:
-            raise RuntimeError(f"Error reading cert file {cert_url}: {e}")
+async def fetch_cert_bytes(cert_url: str, allow_file: bool = False, check_address: bool = True) -> bytes:
+    """Only the primary tenant certificate may be a file, or skip the address check."""
+    if urlsplit(cert_url).scheme.lower() in ("http", "https"):
+        return await fetch_key_material(cert_url, check_address=check_address)
+    if not allow_file:
+        raise KeyFetchError("scheme_not_allowed")
+    return await asyncio.to_thread(_read_certificate_file, cert_url)
+
+
+def _read_certificate_file(path: str) -> bytes:
+    try:
+        with open(path, "rb") as f:
+            data = f.read(MAX_RESPONSE_BYTES + 1)
+    except OSError:
+        raise RuntimeError("Error reading cert file") from None
+    if len(data) > MAX_RESPONSE_BYTES:
+        raise KeyFetchError("too_large")
+    return data
 
 
 # ============================================================================
@@ -423,16 +435,38 @@ def create_certificate(certificate_data: bytes, password: Optional[str] = None):
     return None
 
 
+def certificate_validity_error(certificate, now: Optional[datetime] = None) -> Optional[str]:
+    """"not_yet_valid" or "expired" when `now` is outside the certificate's dates, else None."""
+    now = now or datetime.now(timezone.utc)
+    if now < certificate.not_valid_before_utc:
+        return "not_yet_valid"
+    if now > certificate.not_valid_after_utc:
+        return "expired"
+    return None
+
+
+def _certificate_cache_ttl(certificate, cap: int) -> int:
+    """The cap, or the seconds the certificate has left if fewer."""
+    remaining = certificate.not_valid_after_utc - datetime.now(timezone.utc)
+    return min(cap, int(remaining.total_seconds()))
+
+
+def _path_hash(path: str) -> str:
+    """Keys a cached certificate to its path, so a changed path is fetched again."""
+    return hashlib.sha256(path.encode()).hexdigest()[:16]
+
+
 async def get_tenant_cert(cache_client: CacheClient, tenant: Tenant, tenant_id: str) -> Optional[bytes]:
     """
     Get tenant's public certificate from cache or fetch and cache it.
-    Caches based on certificate validity period.
+    A certificate outside its validity dates is neither returned nor cached.
     """
     if not tenant.jwt_token_parameters:
         return None
-    
-    cache_key = f"tetocertpublic::{tenant_id}"
-    
+
+    path = tenant.jwt_token_parameters.public_certificate_path
+    cache_key = f"tetocertpublic::{tenant_id}::{_path_hash(path or '')}"
+
     # Try cache first
     try:
         cached = cache_client.get_bytes_value(cache_key)
@@ -440,31 +474,34 @@ async def get_tenant_cert(cache_client: CacheClient, tenant: Tenant, tenant_id: 
             return cached
     except Exception:
         pass
-    
-    # Fetch certificate
-    cert_bytes = await fetch_cert_bytes(tenant.jwt_token_parameters.public_certificate_path)
+
+    # The platform writes this path, so it may be a file or an internal address.
+    cert_bytes = await fetch_cert_bytes(path, allow_file=True, check_address=False)
     if not cert_bytes:
         return None
-    
-    # Calculate TTL based on certificate validity
-    try:
-        now = datetime.now(timezone.utc)
-        issue_date = tenant.jwt_token_parameters.issue_date
-        if issue_date and issue_date.tzinfo is None:
-            issue_date = issue_date.replace(tzinfo=timezone.utc)
-        
-        if issue_date:
-            days_remaining = (
-                tenant.jwt_token_parameters.certificate_valid_for_number_of_days
-                - (now - issue_date).days - 1
-            )
-            ttl = max(60, days_remaining * 86400)  # At least 60 seconds
-            
-            if ttl > 0:
-                await cache_client.add_bytes_value_async(cache_key, cert_bytes, ttl)
-    except Exception as e:
-        _logger.warning(f"Failed to cache certificate: {e}")
-    
+
+    certificate = create_certificate(cert_bytes, tenant.jwt_token_parameters.public_certificate_password)
+    if certificate is None:
+        return None
+
+    reason = certificate_validity_error(certificate)
+    if reason is not None:
+        security_log(
+            "tenant_certificate_not_valid",
+            "The tenant's public certificate is outside its validity dates, so tokens "
+            "signed for it are refused.",
+            detail={"tenantId": tenant_id, "reason": reason},
+            is_warning=True,
+        )
+        return None
+
+    ttl = _certificate_cache_ttl(certificate, PRIMARY_CERTIFICATE_CACHE_TTL_SECONDS)
+    if ttl >= 1:
+        try:
+            await cache_client.add_bytes_value_async(cache_key, cert_bytes, ttl)
+        except Exception as e:
+            _logger.warning(f"Failed to cache certificate: {e}")
+
     return cert_bytes
 
 
@@ -494,7 +531,19 @@ async def validate_jwt_token(
     cert = create_certificate(cert_bytes, tenant.jwt_token_parameters.public_certificate_password)
     if not cert:
         raise HTTPException(500, "Failed to load certificate")
-    
+
+    # A cached certificate can expire after it was cached.
+    reason = certificate_validity_error(cert)
+    if reason is not None:
+        security_log(
+            "tenant_certificate_not_valid",
+            "The tenant's public certificate is outside its validity dates, so tokens "
+            "signed for it are refused.",
+            detail={"tenantId": tenant.tenant_id, "reason": reason},
+            is_warning=True,
+        )
+        raise HTTPException(500, "Failed to load certificate")
+
     public_key = cert.public_key()
     public_key_pem = public_key.public_bytes(
         encoding=serialization.Encoding.PEM,
@@ -548,6 +597,9 @@ async def validate_jwt_token(
 # inconvenience rather than an outage, long enough that a busy endpoint is not
 # re-fetching the file per request.
 PROVIDER_CERTIFICATE_CACHE_TTL_SECONDS = 3600
+
+# How long the primary tenant certificate is cached, at most.
+PRIMARY_CERTIFICATE_CACHE_TTL_SECONDS = 3600
 
 # genesis-net pins ClockSkew to zero on the primary path only. The third-party path
 # leaves it at the framework default, so the two runtimes accept the same tokens.
@@ -657,8 +709,12 @@ async def _resolve_certificate_key(
     # Optional on purpose: without a cache the certificate is simply fetched each time,
     # which is slower but still correct. Failing the token instead would make a cache
     # outage look like a provider misconfiguration.
-    cache_key = f"tpprovcert::{provider.tenant_id}::{provider.key}"
+    cache_key = (
+        f"tpprovcert::{provider.tenant_id}::{provider.key}::"
+        f"{_path_hash(provider.public_certificate_path)}"
+    )
     certificate_data = None
+    fetched = False
 
     if cache_client is not None:
         try:
@@ -673,21 +729,14 @@ async def _resolve_certificate_key(
             security_log(
                 "third_party_certificate_unreadable",
                 "The provider's public certificate could not be read from its configured "
-                "path. The path must be an absolute URL this process can fetch without "
-                "credentials, or a file on this host.",
+                "path. The path must be an https URL on a public host. File paths are not "
+                "accepted for third-party providers.",
                 err,
                 detail={"key": provider.key},
                 is_warning=True,
             )
             return None
-
-        if certificate_data and cache_client is not None:
-            try:
-                await cache_client.add_bytes_value_async(
-                    cache_key, certificate_data, PROVIDER_CERTIFICATE_CACHE_TTL_SECONDS
-                )
-            except Exception:
-                pass
+        fetched = True
 
     certificate = create_certificate(certificate_data, password)
     if certificate is None:
@@ -703,6 +752,26 @@ async def _resolve_certificate_key(
             is_warning=True,
         )
         return None
+
+    # Checked on a cache hit too: a cached certificate can expire after it was cached.
+    reason = certificate_validity_error(certificate)
+    if reason is not None:
+        security_log(
+            "third_party_certificate_not_valid",
+            "The provider's certificate is outside its validity dates, so its tokens are "
+            "refused.",
+            detail={"key": provider.key, "reason": reason},
+            is_warning=True,
+        )
+        return None
+
+    if fetched and cache_client is not None:
+        ttl = _certificate_cache_ttl(certificate, PROVIDER_CERTIFICATE_CACHE_TTL_SECONDS)
+        if ttl >= 1:
+            try:
+                await cache_client.add_bytes_value_async(cache_key, certificate_data, ttl)
+            except Exception:
+                pass
 
     return certificate.public_key().public_bytes(
         encoding=serialization.Encoding.PEM,
@@ -750,11 +819,7 @@ async def _resolve_provider_key(
     # so it survives the provider rotating one without anything here being touched.
     if provider.jwks_url:
         try:
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(
-                None,
-                lambda: PyJWKClient(provider.jwks_url).get_signing_key_from_jwt(token).key,
-            )
+            return await get_jwks_cache().get_signing_key(provider.jwks_url, token)
         except Exception as err:
             security_log(
                 "third_party_certificate_unreadable",

@@ -128,13 +128,13 @@ async def test_cookie_third_party_token_missing(mock_bcm):
 @pytest.mark.asyncio
 async def test_fetch_cert_bytes_file_success(tmp_path):
     f = tmp_path / 'cert.pfx'; f.write_bytes(b'data')
-    assert await auth.fetch_cert_bytes(str(f)) == b'data'
+    assert await auth.fetch_cert_bytes(str(f), allow_file=True) == b'data'
 
 
 @pytest.mark.asyncio
 async def test_fetch_cert_bytes_file_error():
     with pytest.raises(RuntimeError):
-        await auth.fetch_cert_bytes('/no/such/cert/file.pfx')
+        await auth.fetch_cert_bytes('/no/such/cert/file.pfx', allow_file=True)
 
 
 @pytest.mark.asyncio
@@ -343,21 +343,24 @@ async def test_get_tenant_cert_no_params():
 @pytest.mark.asyncio
 async def test_get_tenant_cert_cache_hit():
     tenant = MagicMock()
+    tenant.jwt_token_parameters.public_certificate_path = '/p'
     cache = MagicMock(); cache.get_bytes_value.return_value = b'cached'
     assert await auth.get_tenant_cert(cache, tenant, 'tid') == b'cached'
 
 
 @pytest.mark.asyncio
 @patch(AU + 'fetch_cert_bytes', new_callable=AsyncMock)
-async def test_get_tenant_cert_fetch_and_cache(mock_fetch):
+async def test_get_tenant_cert_fetch_and_cache(mock_fetch, valid_cert_pem):
     tenant = MagicMock()
+    tenant.jwt_token_parameters.public_certificate_path = '/p'
+    tenant.jwt_token_parameters.public_certificate_password = None
     tenant.jwt_token_parameters.issue_date = datetime.now(timezone.utc)
     tenant.jwt_token_parameters.certificate_valid_for_number_of_days = 365
     cache = MagicMock()
     cache.get_bytes_value.side_effect = Exception('miss')
     cache.add_bytes_value_async = AsyncMock()
-    mock_fetch.return_value = b'certbytes'
-    assert await auth.get_tenant_cert(cache, tenant, 'tid') == b'certbytes'
+    mock_fetch.return_value = valid_cert_pem
+    assert await auth.get_tenant_cert(cache, tenant, 'tid') == valid_cert_pem
     cache.add_bytes_value_async.assert_awaited()
 
 
@@ -365,29 +368,33 @@ async def test_get_tenant_cert_fetch_and_cache(mock_fetch):
 @patch(AU + 'fetch_cert_bytes', new_callable=AsyncMock)
 async def test_get_tenant_cert_fetch_none(mock_fetch):
     tenant = MagicMock()
+    tenant.jwt_token_parameters.public_certificate_path = '/p'
     cache = MagicMock(); cache.get_bytes_value.return_value = None
     mock_fetch.return_value = None
     assert await auth.get_tenant_cert(cache, tenant, 'tid') is None
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('issue_date, valid_days', [
+    (None, 365),
+    ('bad-date', 365),
+    (datetime.now(), 365),
+    (datetime(2020, 1, 1, tzinfo=timezone.utc), 10),
+])
 @patch(AU + 'fetch_cert_bytes', new_callable=AsyncMock)
-async def test_get_tenant_cert_no_issue_date(mock_fetch):
+async def test_get_tenant_cert_ttl_ignores_issue_date(mock_fetch, issue_date, valid_days, valid_cert_pem):
+    """The certificate's own dates set the TTL; IssueDate is no longer read."""
     tenant = MagicMock()
-    tenant.jwt_token_parameters.issue_date = None
+    tenant.jwt_token_parameters.public_certificate_path = '/p'
+    tenant.jwt_token_parameters.public_certificate_password = None
+    tenant.jwt_token_parameters.issue_date = issue_date
+    tenant.jwt_token_parameters.certificate_valid_for_number_of_days = valid_days
     cache = MagicMock(); cache.get_bytes_value.return_value = None
-    mock_fetch.return_value = b'cb'
-    assert await auth.get_tenant_cert(cache, tenant, 'tid') == b'cb'
-
-
-@pytest.mark.asyncio
-@patch(AU + 'fetch_cert_bytes', new_callable=AsyncMock)
-async def test_get_tenant_cert_ttl_exception(mock_fetch):
-    tenant = MagicMock()
-    tenant.jwt_token_parameters.issue_date = 'bad-date'
-    cache = MagicMock(); cache.get_bytes_value.return_value = None
-    mock_fetch.return_value = b'cb'
-    assert await auth.get_tenant_cert(cache, tenant, 'tid') == b'cb'
+    cache.add_bytes_value_async = AsyncMock()
+    mock_fetch.return_value = valid_cert_pem
+    assert await auth.get_tenant_cert(cache, tenant, 'tid') == valid_cert_pem
+    cache.add_bytes_value_async.assert_awaited_once()
+    assert cache.add_bytes_value_async.await_args.args[2] == auth.PRIMARY_CERTIFICATE_CACHE_TTL_SECONDS
 
 
 @pytest.mark.asyncio
@@ -398,6 +405,13 @@ async def test_cookie_no_app_domain(mock_bcm):
     mock_bcm.resolve_application_domain.return_value = None
     ts = MagicMock(); ts.get_tenant = AsyncMock(return_value=None)
     assert await auth._extract_token_from_cookie(MagicMock(), ts) == (None, False, None)
+
+
+def _cert_in_date():
+    cert = MagicMock(); cert.public_key.return_value.public_bytes.return_value.decode.return_value = 'pem'
+    cert.not_valid_before_utc = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    cert.not_valid_after_utc = datetime(2999, 1, 1, tzinfo=timezone.utc)
+    return cert
 
 
 @pytest.mark.asyncio
@@ -430,8 +444,7 @@ async def test_validate_jwt_no_cert(mock_gtc, mock_cc):
 @patch(AU + 'get_tenant_cert', new_callable=AsyncMock)
 async def test_validate_jwt_success(mock_gtc, mock_cc, mock_jwt):
     mock_gtc.return_value = b'b'
-    cert = MagicMock(); cert.public_key.return_value.public_bytes.return_value.decode.return_value = 'pem'
-    mock_cc.return_value = cert
+    mock_cc.return_value = _cert_in_date()
     mock_jwt.decode.return_value = {'sub': 'u1'}
     req = MagicMock(); req.url = URL('http://x/')
     result = await auth.validate_jwt_token('tok', MagicMock(), MagicMock(), req)
@@ -444,8 +457,7 @@ async def test_validate_jwt_success(mock_gtc, mock_cc, mock_jwt):
 @patch(AU + 'get_tenant_cert', new_callable=AsyncMock)
 async def test_validate_jwt_expired(mock_gtc, mock_cc, mock_jwt):
     mock_gtc.return_value = b'b'
-    cert = MagicMock(); cert.public_key.return_value.public_bytes.return_value.decode.return_value = 'pem'
-    mock_cc.return_value = cert
+    mock_cc.return_value = _cert_in_date()
     mock_jwt.decode.side_effect = auth.ExpiredSignatureError()
     with pytest.raises(HTTPException):
         await auth.validate_jwt_token('tok', MagicMock(), MagicMock(), MagicMock())
@@ -457,8 +469,7 @@ async def test_validate_jwt_expired(mock_gtc, mock_cc, mock_jwt):
 @patch(AU + 'get_tenant_cert', new_callable=AsyncMock)
 async def test_validate_jwt_invalid(mock_gtc, mock_cc, mock_jwt):
     mock_gtc.return_value = b'b'
-    cert = MagicMock(); cert.public_key.return_value.public_bytes.return_value.decode.return_value = 'pem'
-    mock_cc.return_value = cert
+    mock_cc.return_value = _cert_in_date()
     mock_jwt.decode.side_effect = auth.InvalidTokenError('bad')
     with pytest.raises(auth.InvalidTokenError):
         await auth.validate_jwt_token('tok', MagicMock(), MagicMock(), MagicMock())
@@ -638,15 +649,3 @@ async def test_get_tenant_cert_fetch_returns_none(mock_fetch):
     cache = MagicMock(); cache.get_bytes_value.return_value = None
     mock_fetch.return_value = None
     assert await auth.get_tenant_cert(cache, tenant, 'tid') is None
-
-
-@pytest.mark.asyncio
-@patch(AU + 'fetch_cert_bytes', new_callable=AsyncMock)
-async def test_get_tenant_cert_naive_issue_date(mock_fetch):
-    tenant = MagicMock()
-    tenant.jwt_token_parameters.issue_date = datetime.now()
-    tenant.jwt_token_parameters.certificate_valid_for_number_of_days = 365
-    cache = MagicMock(); cache.get_bytes_value.return_value = None
-    cache.add_bytes_value_async = AsyncMock()
-    mock_fetch.return_value = b'cb'
-    assert await auth.get_tenant_cert(cache, tenant, 'tid') == b'cb'
