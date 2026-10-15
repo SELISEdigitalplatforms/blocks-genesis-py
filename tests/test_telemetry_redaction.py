@@ -387,6 +387,8 @@ def _exporter():
     exporter._service_name = "svc"
     exporter._db = MagicMock()
     exporter._queue = Queue(maxsize=10)
+    exporter._worker_thread = MagicMock()
+    exporter._stop_event = MagicMock()
     return exporter
 
 
