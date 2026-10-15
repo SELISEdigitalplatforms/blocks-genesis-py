@@ -15,6 +15,7 @@ from blocks_genesis._auth.blocks_context import BlocksContextManager
 from blocks_genesis._core.secret_loader import get_blocks_secret
 from blocks_genesis._delegation.constants import DELEGATION_GRANT_HEADER
 from blocks_genesis._delegation.grant_factory import get_delegation_grant_factory
+from blocks_genesis._delegation.grant_store import get_delegation_grant_store
 from blocks_genesis._lmt.activity import Activity
 from blocks_genesis._message.consumer_message import ConsumerMessage
 from blocks_genesis._message.event_message import EventMessage
@@ -176,7 +177,17 @@ class AzureMessageClient(MessageClient):
                     name,
                     str(ex),
                 )
+                if delegation_grant:
+                    await self._delete_undelivered_grant(delegation_grant)
                 raise
+
+    @staticmethod
+    async def _delete_undelivered_grant(delegation_grant: str) -> None:
+        """Best effort: the message never left, so nothing will redeem or delete its grant."""
+        try:
+            await get_delegation_grant_store().delete_async(delegation_grant)
+        except Exception as ex:  # noqa: BLE001 - the absolute TTL still bounds the grant
+            logger.warning("Could not delete the grant of an undelivered message: %s", type(ex).__name__)
 
     def _serialize_payload(self, payload):
         if isinstance(payload, BaseModel):
