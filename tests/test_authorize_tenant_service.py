@@ -100,7 +100,7 @@ async def test_authenticate_accepts_enabled_tenant():
          patch(AU + '_validate_authenticated_token', new_callable=AsyncMock) as validate:
         extract.return_value = ('tok', False, 'd.com')
         mock_bcm.get_context.return_value = MagicMock(tenant_id='t1')
-        validate.return_value = ({'sub': 'u1'}, None)
+        validate.return_value = ({'sub': 'u1'}, None, _tenant())
         assert await auth.authenticate(request, ts, MagicMock()) == {'sub': 'u1'}
 
     validate.assert_awaited_once()
