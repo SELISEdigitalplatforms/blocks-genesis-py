@@ -37,6 +37,7 @@ class TenantService:
         self.database = self.client[self._blocks_secret.RootDatabaseName]
 
         self._tenant_cache: Dict[str, Tenant] = {}
+        self._root_tenant_id: Optional[str] = None
         self._tenant_load_in_progress: Dict[str, asyncio.Task] = {}
         self._update_channel = "tenant::updates"
         self._collection_name = "Tenants"
@@ -54,6 +55,7 @@ class TenantService:
                 return
 
             asyncio.create_task(self._subscribe_to_updates())
+            await self._load_root_tenant_id()
             self._initialized = True
             _logger.info("TenantService initialized successfully")
 
@@ -152,15 +154,34 @@ class TenantService:
         return None, None
 
     def get_root_tenant_id(self) -> Optional[str]:
-        """The root tenant's id, from the cache.
+        """The root tenant's id, as loaded from the root database at startup.
 
-        Public so consumers stop scanning the private `_tenant_cache` themselves -- that
-        breaks the moment the cache gains an expiry or evicts a disabled tenant.
+        Falls back to scanning the cache only when that load has not succeeded.
         """
+        if self._root_tenant_id:
+            return self._root_tenant_id
         return next(
             (t.tenant_id for t in self._tenant_cache.values() if t.is_root_tenant),
             None,
         )
+
+    async def get_root_tenant_id_async(self) -> Optional[str]:
+        """The root tenant's id, loading it from the root database if it is not known yet."""
+        if not self._root_tenant_id:
+            await self._load_root_tenant_id()
+        return self._root_tenant_id
+
+    async def _load_root_tenant_id(self) -> None:
+        # Read only from the root database: a tenant update arriving on the pub/sub
+        # channel must never be able to make itself the root tenant.
+        try:
+            tenant_dict = await self.database[self._collection_name].find_one(
+                {"IsRootTenant": True}, sort=[("IsDisabled", 1)]
+            )
+            if tenant_dict:
+                self._root_tenant_id = Tenant(**tenant_dict).tenant_id
+        except Exception as e:
+            _logger.exception(f"Error loading the root tenant: {e}")
 
     def get_tenant_database_connection_strings(self) -> Dict[str, Tuple[str, str]]:
         """

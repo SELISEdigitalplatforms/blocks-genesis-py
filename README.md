@@ -315,6 +315,7 @@ Everything below is importable from the top-level `blocks_genesis` package.
 Notes:
 
 - `authorize(resource_name, bypass_authorization=False)` returns a FastAPI dependency. `resource_name` is required unless `bypass_authorization=True`; a missing name on a protected endpoint raises `ValueError` at route definition time.
+- `get_tenant_service().get_root_tenant_id_async()` returns the root tenant's id, read from the root database (loaded once at startup, or on first call if that load failed); the sync `get_root_tenant_id()` returns the same stored id. Tenant updates on the cache channel never change it.
 - `MessageConfiguration.resolve_provider()` auto-selects RabbitMQ for `amqp://`/`amqps://` connection strings and Azure Service Bus otherwise, when neither sub-configuration is set explicitly.
 
 ## Configuration
