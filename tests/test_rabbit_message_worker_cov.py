@@ -193,7 +193,7 @@ async def test_process_message_decode_variants_and_bad_baggage():
 
 
 @pytest.mark.asyncio
-async def test_process_message_bad_security_context():
+async def test_process_message_bad_security_context_acks_without_handling():
     w = _worker()
     w._consumer.process_message = AsyncMock()
     headers = {
@@ -208,6 +208,7 @@ async def test_process_message_bad_security_context():
     with patch(RMW + 'BlocksContextManager'), patch(RMW + 'TraceContextTextMapPropagator'):
         await w._process_message(msg, sub)
     msg.ack.assert_awaited_once()
+    w._consumer.process_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -154,7 +154,7 @@ message_config = MessageConfiguration(
 app = WorkerConsoleApp("my_worker", message_config, {"DemoEvent": handle_demo_event})
 ```
 
-Start the consume loop with `asyncio.run(app.run(callback))`, where `callback` is an async function invoked once the worker is ready. The mapping passed as the third argument registers one handler per payload type.
+Start the consume loop with `asyncio.run(app.run(callback))`, where `callback` is an async function invoked once the worker is ready. The mapping passed as the third argument registers one handler per payload type. A handler may be an async function or a class with a no-argument constructor and an async `handle(self, data)` method.
 
 ### Publishing a message
 
@@ -192,6 +192,12 @@ description; RabbitMQ acks it and logs an error. Either way the grant is kept, a
 it. A message with no grant is handled as before. If you pass `ConsumerMessage.context` yourself, it
 must name the same tenant, user and organization as the sender's own context, because the grant is
 built from the sender's context.
+
+A `SecurityContext` header that is present but cannot be read (not JSON, not a JSON object, or not
+a valid context) is refused the same way, before the grant is checked: Azure Service Bus
+dead-letters the message with reason `InvalidSecurityContext`, and RabbitMQ acks it and logs an
+error. Neither the header nor the parse error is logged. A missing or empty header (`""` or `{}`)
+still runs the handler with no context.
 
 The wire format is identical to `blocks-genesis-net` — grant id shape, signature input, Redis keys,
 JSON field names, header names — and a shared conformance vector is asserted in both SDKs.
@@ -275,8 +281,14 @@ the public host.**
 - Restrict Redis writes to `delegation:*` to the delegation component; write access there is
   impersonation authority.
 - The exchange signature has a ±60s clock window, so **NTP must be correct** on worker and IAM nodes.
-- A grant is deleted only after a successful run (business op → ACK → DEL). A failed run keeps its
-  grant so a redelivery still works; the absolute TTL is the backstop.
+- A grant is deleted only after the message is settled for good, in the order business op → settle
+  → DEL. RabbitMQ acks every message once (no retry), so it deletes the grant after the ack whether
+  the handler succeeded or failed. Azure Service Bus deletes it after completing the message, or
+  after dead-lettering it on its final attempt (reason `ProcessingFailed`; the final attempt is
+  judged from the configured `queue_max_delivery_count` or `topic_subscription_max_delivery_count`)
+  or because it could not be decoded (reason `UndecodableMessage`). An abandoned message keeps its
+  grant so the redelivery still works. A refused message, or one whose grant was never checked,
+  keeps its grant until the absolute TTL. A failed delete is logged and left to the TTL.
 
 ## Public API
 

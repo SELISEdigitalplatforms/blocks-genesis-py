@@ -202,6 +202,7 @@ def azure_message(ctx, grant_id):
 
     message = MagicMock()
     message.message_id = "msg-1"
+    message.delivery_count = 0
     message.application_properties = properties
     message.body = [json.dumps({"type": "OrderPlaced", "body": "{}"}).encode()]
     return message
@@ -290,8 +291,7 @@ async def test_azure_worker_abandons_when_the_grant_store_fails():
     with patch(AMW + "get_delegation_grant_store", return_value=store), patch(
         AMW + "get_delegated_token_provider", return_value=MagicMock(invalidate=MagicMock())
     ):
-        with pytest.raises(RuntimeError):
-            await worker.message_handler(receiver, message)
+        await worker.message_handler(receiver, message)
 
     worker._consumer.process_message.assert_not_awaited()
     receiver.abandon_message.assert_awaited_once_with(message)

@@ -229,15 +229,14 @@ async def test_rabbit_worker_releases_the_grant_after_a_successful_settle():
     provider.invalidate.assert_called_once_with(GRANT_ID)
 
 
-async def test_rabbit_worker_retains_the_grant_when_the_handler_fails():
+async def test_rabbit_worker_releases_the_grant_when_the_handler_fails():
     envelope = json.dumps({"type": "Explode", "body": "{}"})
     message, store, provider = await run_rabbit_worker(envelope, GRANT_ID)
 
-    # The ack still happens (existing behaviour), but a failed run must keep its grant so a
-    # redelivery can still mint a token.
+    # The ack is final (no redelivery), so nothing can use the grant again.
     message.ack.assert_awaited_once()
-    store.delete_async.assert_not_awaited()
-    provider.invalidate.assert_not_called()
+    store.delete_async.assert_awaited_once_with(GRANT_ID)
+    provider.invalidate.assert_called_once_with(GRANT_ID)
 
 
 async def test_rabbit_worker_exposes_the_grant_to_the_handler():
