@@ -21,7 +21,10 @@ class CryptoService:
     def hash_string(value: str, salt: str = None) -> str:
         """
         Hash a string with optional salt, compatible with C# implementation.
-        
+
+        Not a password hash: a single unkeyed SHA-256 of value + salt, with no separator
+        between them and no work factor. Do not use it to store passwords.
+
         Args:
             value: String to hash
             salt: Optional salt string (None treated as empty string)
@@ -139,9 +142,9 @@ class CryptoService:
 
         try:
             plain = AESGCM(CryptoService._derive_key(key_material)).decrypt(nonce, sealed, None)
+            # Inside the try: a box that opens but does not hold UTF-8 text is a failure too.
+            return plain.decode('utf-8')
         except Exception:
             # The tag did not verify: tampered with, or the key material is wrong. Both
             # are the caller's to report -- this layer only says no.
             return None
-
-        return plain.decode('utf-8')

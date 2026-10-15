@@ -107,6 +107,19 @@ def test_encrypt_refuses_a_blank_salt(salt):
 # The key is derived, never used raw
 # ---------------------------------------------------------------------------
 
+def test_a_value_that_is_not_utf8_gives_nothing():
+    """The box opens, but what is inside is not text: None, as documented, not a raise."""
+    import os
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    nonce = os.urandom(12)
+    sealed = AESGCM(CryptoService._derive_key(SALT)).encrypt(nonce, b"\xff\xfe\xfd", None)
+    box = base64.b64encode(bytes([1]) + nonce + sealed).decode("utf-8")
+
+    assert CryptoService.decrypt(box, SALT) is None
+
+
 def test_the_key_is_the_sha256_of_the_salt():
     """So the stored salt and the AES key are never the same bytes, and any length of
     salt yields a valid AES-256 key."""

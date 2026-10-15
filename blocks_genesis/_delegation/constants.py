@@ -23,6 +23,9 @@ DELEGATION_GRANT_TOKEN_TYPE = "urn:blocks:params:oauth:token-type:delegation-gra
 # Default absolute lifetime of a grant record, in seconds (2 days).
 DEFAULT_GRANT_TTL_SECONDS = 2 * 24 * 60 * 60
 
+# Longest lifetime a sender may request; a longer request is cut to this.
+MAX_GRANT_TTL_SECONDS = DEFAULT_GRANT_TTL_SECONDS
+
 # Nonce replay window, in seconds. At least twice the clock window.
 NONCE_TTL_SECONDS = 120
 
@@ -31,6 +34,9 @@ CLOCK_WINDOW_SECONDS = 60
 
 # How long before a token's expiry a cached entry stops being served, in seconds.
 TOKEN_RENEWAL_MARGIN_SECONDS = 60
+
+# How long a discovered token endpoint is reused before discovery runs again, in seconds.
+DISCOVERY_CACHE_SECONDS = 3600
 
 BLOCKS_KEY_HEADER = "x-blocks-key"
 

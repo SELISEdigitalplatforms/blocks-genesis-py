@@ -3,9 +3,10 @@
 Tenant comes from `BlocksContext`, never from a raw header. In a worker it was populated from the
 message `SecurityContext`; in an API request it comes from the validated token.
 
-The cache is a dict of per-grant entries, each guarded by its own `asyncio.Lock`. That lock is what
-gives single-flight: fifty concurrent callers on one grant perform exactly one exchange. The dict
-does not evict on its own, so entries are removed when a message settles and swept periodically.
+The cache is a dict of entries keyed by tenant and grant, each guarded by its own `asyncio.Lock`, so
+a token is never served to another tenant. That lock is what gives single-flight: fifty concurrent
+callers on one grant perform exactly one exchange. The dict does not evict on its own, so entries
+are removed when a message settles and swept periodically.
 """
 
 import asyncio
@@ -13,7 +14,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import aiohttp
 from opentelemetry.trace import StatusCode
@@ -64,8 +65,8 @@ class DelegatedTokenProvider:
         self._session_factory = session_factory
         self._time = time_func or time.time
 
-        self._tokens: Dict[str, _CachedToken] = {}
-        self._locks: Dict[str, asyncio.Lock] = {}
+        self._tokens: Dict[Tuple[str, str], _CachedToken] = {}
+        self._locks: Dict[Tuple[str, str], asyncio.Lock] = {}
         self._call_count = 0
 
     @property
@@ -95,20 +96,21 @@ class DelegatedTokenProvider:
         if self._call_count % SWEEP_INTERVAL_CALLS == 0:
             self._sweep_expired()
 
+        key = (tenant_id, delegation_id)
         now = self._time()
-        cached = self._tokens.get(delegation_id)
+        cached = self._tokens.get(key)
         if cached and cached.is_usable(now):
             return cached.access_token
 
-        lock = self._locks.setdefault(delegation_id, asyncio.Lock())
+        lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
             # Re-check under the lock: whoever held it first may already have refreshed.
             now = self._time()
-            cached = self._tokens.get(delegation_id)
+            cached = self._tokens.get(key)
             if cached and cached.is_usable(now):
                 return cached.access_token
 
-            self._tokens.pop(delegation_id, None)
+            self._tokens.pop(key, None)
 
             try:
                 token = await self._exchange_async(tenant_id, delegation_id)
@@ -119,15 +121,17 @@ class DelegatedTokenProvider:
             if token is None:
                 return None
 
-            self._tokens[delegation_id] = token
+            self._tokens[key] = token
             return token.access_token
 
     def invalidate(self, delegation_grant_id: Optional[str]) -> None:
-        """Drop the cached token for a grant. Called when a message settles."""
+        """Drop the cached tokens for a grant, under every tenant. Called when a message settles."""
         if not delegation_grant_id:
             return
-        self._tokens.pop(delegation_grant_id, None)
-        self._locks.pop(delegation_grant_id, None)
+        for key in [key for key in self._tokens if key[1] == delegation_grant_id]:
+            self._tokens.pop(key, None)
+        for key in [key for key in self._locks if key[1] == delegation_grant_id]:
+            self._locks.pop(key, None)
 
     async def _exchange_async(self, tenant_id: str, delegation_id: str) -> Optional[_CachedToken]:
         tenant = await self._tenants.get_tenant(tenant_id)
@@ -168,7 +172,10 @@ class DelegatedTokenProvider:
             TraceContextTextMapPropagator().inject(headers)
 
             async with session_context as session:
-                async with session.post(endpoint, data=form, headers=headers) as response:
+                # A 3xx is not followed, so the grant is never re-posted elsewhere; it fails below.
+                async with session.post(
+                    endpoint, data=form, headers=headers, allow_redirects=False
+                ) as response:
                     body = await response.text()
 
                     activity.set_property("http.response.status_code", response.status)
