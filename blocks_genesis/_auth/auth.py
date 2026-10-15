@@ -30,8 +30,10 @@ from blocks_genesis._cache.cache_provider import CacheProvider
 from blocks_genesis._delegation.context import AuthClaimsContext
 from blocks_genesis._database.db_context import DbContext
 from blocks_genesis._lmt.activity import Activity
+from blocks_genesis._core.configuration import is_local_deployment
+from blocks_genesis._middlewares.origin_policy import is_tenant_origin_host
 from blocks_genesis._subscription.context import SubscriptionUsageContext
-from blocks_genesis._subscription.models import UsageResult
+from blocks_genesis._subscription.models import UsageResult, UsageSnapshot
 from blocks_genesis._subscription.usage_service import SubscriptionUsageService
 from blocks_genesis._tenant.tenant import Tenant
 from blocks_genesis._tenant.tenant_service import TenantService
@@ -42,6 +44,9 @@ _logger = logging.getLogger(__name__)
 # Names which external identity provider a token came from, for the one case issuer
 # and audience cannot separate: two providers configured with both the same.
 THIRD_PARTY_IDP_HEADER = "x-blocks-idp"
+
+# Methods that only read. A cookie on any other method needs the caller's origin.
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 
@@ -80,6 +85,9 @@ async def _extract_token_from_cookie(request: Request, tenant_service: TenantSer
     1. Tries tenant-specific cookie using application domain
     2. Falls back to third-party token cookie from tenant config
 
+    On a method other than GET, HEAD or OPTIONS a cookie is read only when the
+    Origin or Referer is one of the tenant's application domains.
+
     Returns: (token, is_third_party_token, application_domain)
     """
     # Validate BlocksContext exists with tenant_id
@@ -89,6 +97,16 @@ async def _extract_token_from_cookie(request: Request, tenant_service: TenantSer
 
     # Resolve application domain from request headers (Origin > Referer > Host)
     application_domain = BlocksContextManager.resolve_application_domain(request)
+
+    tenant = None
+    if request.method not in _SAFE_METHODS:
+        # A browser attaches cookies whatever page started the request; without an Origin
+        # or Referer from the tenant's own application, only the Authorization header counts.
+        if not application_domain:
+            return None, False, None
+        tenant = await tenant_service.get_tenant(context.tenant_id)
+        if not tenant or not is_tenant_origin_host(application_domain, tenant):
+            return None, False, None
 
     # Localhost/dev fallback: support loopback equivalents when the cookie was set on a different local host alias.
     local_token = _try_localhost_alias_cookie(request, application_domain)
@@ -102,7 +120,8 @@ async def _extract_token_from_cookie(request: Request, tenant_service: TenantSer
             return token, False, application_domain  # Primary tenant token, not third-party
 
     # 2. Fall back to third-party token cookie
-    tenant = await tenant_service.get_tenant(context.tenant_id)
+    if tenant is None:
+        tenant = await tenant_service.get_tenant(context.tenant_id)
     if not tenant or not tenant.third_party_jwt_token_parameters:
         return None, False, None
 
@@ -120,6 +139,8 @@ async def _extract_token_from_cookie(request: Request, tenant_service: TenantSer
 def _try_localhost_alias_cookie(request: Request, application_domain: Optional[str]) -> Optional[str]:
     """Return a cookie set under a loopback alias when the app domain is a localhost host."""
     if not (application_domain and BlocksContextManager.is_localhost_host(application_domain)):
+        return None
+    if not is_local_deployment():
         return None
     for local_host in ("localhost", "127.0.0.1", "::1"):
         if local_host == application_domain:
@@ -247,7 +268,7 @@ async def authenticate(
                 user_name=mapped["user_name"],
                 display_name=mapped["display_name"],
                 application_domain=application_domain or "",
-                request_uri=str(request.url),
+                request_uri=str(request.url.path),
             )
         except ValueError as err:
             security_log(
@@ -501,7 +522,7 @@ async def validate_jwt_token(
         )
         
         # Enrich payload with request metadata
-        payload[BlocksContext.REQUEST_URI_CLAIM] = str(request.url)
+        payload[BlocksContext.REQUEST_URI_CLAIM] = str(request.url.path)
         payload[BlocksContext.TOKEN_CLAIM] = token
         
         return payload
@@ -940,21 +961,15 @@ def map_third_party_claims(
 
 def _report_selection_failure(
     selection,
-    issuer: str,
-    audiences: List[str],
     providers: List[ThirdPartyJwtProvider],
     header_key: Optional[str],
 ) -> None:
-    """Explain a selection miss in the terms an operator can act on: what the token
-    carried, beside what is configured."""
+    """Explain a selection miss by provider keys, without the token's or the providers'
+    issuer and audiences."""
     detail = {
-        "tokenIssuer": issuer,
-        "tokenAudiences": audiences,
         "headerKey": header_key,
         "candidates": selection.candidate_count,
-        "configured": [
-            {"Key": p.key, "Issuer": p.issuer, "Audiences": p.audiences} for p in providers
-        ],
+        "configuredKeys": [p.key for p in providers],
     }
 
     outcome = selection.outcome
@@ -1125,7 +1140,7 @@ async def _run_fallback(
     selection = select_third_party_provider(providers, issuer, audiences, header_key)
 
     if not selection.is_selected:
-        _report_selection_failure(selection, issuer, audiences, providers, header_key)
+        _report_selection_failure(selection, providers, header_key)
         return None, selection.outcome
 
     provider = selection.provider
@@ -1173,7 +1188,7 @@ async def _run_fallback(
         )
         return None, ThirdPartyProviderSelection.SELECTED
 
-    claims[BlocksContext.REQUEST_URI_CLAIM] = str(request.url)
+    claims[BlocksContext.REQUEST_URI_CLAIM] = str(request.url.path)
 
     security_log(
         "fallback_token_validated",
@@ -1415,6 +1430,60 @@ async def resolve_subscription_usage(
         snapshot = None
 
     SubscriptionUsageContext.set(snapshot)
+    return snapshot
+
+
+async def resolve_subscription_usage_snapshot(
+    *,
+    tenant_id: Optional[str] = None,
+    organization_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> Optional[UsageSnapshot]:
+    """The organization's balances and the signed-in member's own, in one read.
+
+    The sibling of `resolve_subscription_usage`. Context ids win for the tenant and the
+    organization, the same as there.
+
+    The member defaults to whoever the token signed in -- the user id on an authenticated
+    context -- so a caller with a valid token gets its own member's balance without asking.
+    `user_id` overrides it, and the difference between its two empty values matters:
+
+    - `None`, the default: not said, so the signed-in user is the member
+    - `""`: deliberately no member
+
+    Pass `""` for a caller whose token carries a user id who does not answer for their own
+    share -- a widget visitor, or anything billed on a client credential. Only the caller
+    knows that; the context does not.
+
+    Both sides come back from a single query. `SubscriptionUsageContext` is set to the
+    organization's rows, as `resolve_subscription_usage` sets it, so everything that reads
+    the context sees what it always has. Never raises -- missing ids leave the snapshot
+    None, and a failed read is None on each side inside it.
+    """
+    context = BlocksContextManager.get_context()
+    if context is not None:
+        tenant_id = context.tenant_id or tenant_id
+        organization_id = context.organization_id or organization_id
+        if user_id is None and context.is_authenticated:
+            user_id = context.user_id or None
+
+    if not tenant_id or not organization_id:
+        SubscriptionUsageContext.set(None)
+        return None
+
+    try:
+        snapshot = await SubscriptionUsageService.get_usage_snapshot(
+            tenant_id=tenant_id,
+            organization_id=organization_id,
+            user_id=user_id or None,
+            entitlements=False,
+        )
+    except Exception:
+        _logger.exception("Usage lookup failed; snapshot left None.")
+        SubscriptionUsageContext.set(None)
+        return None
+
+    SubscriptionUsageContext.set(snapshot.organization)
     return snapshot
 
 

@@ -2,12 +2,13 @@ import logging
 from fastapi import FastAPI, Request, logger
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.routing import APIRoute
-from starlette.middleware.cors import CORSMiddleware
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 import os
 from pathlib import Path
+from typing import List, Optional, Sequence, Union
 from blocks_genesis._cache.cache_provider import CacheProvider
 from blocks_genesis._cache.redis_client import RedisClient
+from blocks_genesis._core.configuration import get_setting_list, is_local_deployment
 from blocks_genesis._core.secret_loader import SecretLoader, get_blocks_secret
 from blocks_genesis._database.db_context import DbContext
 from blocks_genesis._database.mongo_context import MongoDbContextProvider
@@ -17,6 +18,7 @@ from blocks_genesis._lmt.tracing import configure_tracing
 from blocks_genesis._message.azure.azure_message_client import AzureMessageClient
 from blocks_genesis._message.rabbit_mq.rabbit_message_client import RabbitMessageClient
 from blocks_genesis._message.message_configuration import MessageConfiguration
+from blocks_genesis._middlewares.cors_middleware import GenesisCORSMiddleware
 from blocks_genesis._middlewares.global_exception_middleware import GlobalExceptionHandlerMiddleware
 from blocks_genesis._middlewares.tenant_middleware import TenantValidationMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
@@ -30,6 +32,8 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.staticfiles import StaticFiles
 
 logger = logging.getLogger(__name__)
+
+TRUSTED_PROXY_HOSTS_KEY = "BLOCKS_TRUSTED_PROXY_HOSTS"
 
 async def configure_lifespan(name: str, message_config: MessageConfiguration):
     logger.info("Initializing services...")
@@ -96,7 +100,21 @@ async def close_lifespan():
     if hasattr(MongoHandler, '_mongo_logger') and MongoHandler._mongo_logger:
         MongoHandler._mongo_logger.stop()
         
-def configure_genesis(app: FastAPI, show_docs: bool = False, serve_static: bool = False, static_mount_path: str = "/", static_dir: str = ""):
+def _trusted_proxy_hosts() -> Union[str, List[str]]:
+    """Hosts whose X-Forwarded-For and X-Forwarded-Proto are trusted. Defaults to any host."""
+    hosts = get_setting_list(TRUSTED_PROXY_HOSTS_KEY)
+    if hosts and "*" not in hosts:
+        return hosts
+    if not is_local_deployment():
+        logger.warning(
+            "%s is unset or '*': X-Forwarded-For and X-Forwarded-Proto are trusted from any host. "
+            "Set it to the addresses of the proxies in front of this service.",
+            TRUSTED_PROXY_HOSTS_KEY,
+        )
+    return "*"
+
+
+def configure_genesis(app: FastAPI, show_docs: bool = False, serve_static: bool = False, static_mount_path: str = "/", static_dir: str = "", cors_origins: Optional[Sequence[str]] = None):
     """
     Configure all genesis middlewares and optionally mount static files.
     Args:
@@ -105,19 +123,14 @@ def configure_genesis(app: FastAPI, show_docs: bool = False, serve_static: bool 
         serve_static: If True, mount static files
         static_mount_path: URL path to mount static files (default: "/")
         static_dir: Directory to serve static files from (default: ./static in user project root)
+        cors_origins: Origins allowed by CORS in addition to BLOCKS_CORS_ALLOWED_ORIGINS and the tenants' application domains
     """
-    app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=["*"])
+    app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=_trusted_proxy_hosts())
     app.add_middleware(GZipMiddleware)
     app.add_middleware(TenantValidationMiddleware, included_paths=["/api"])
     app.add_middleware(GlobalExceptionHandlerMiddleware)
     FastAPIInstrumentor.instrument_app(app)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    app.add_middleware(GenesisCORSMiddleware, allowed_origins=list(cors_origins or []))
     if serve_static:
         # Determine the static directory in a robust, pythonic way
         if static_dir:
@@ -144,7 +157,7 @@ def configure_genesis(app: FastAPI, show_docs: bool = False, serve_static: bool 
     async def get_documentation(request:Request):
         root_path = request.scope.get("root_path", None)
         openapi_url = f"{root_path}/openapi.json" if root_path else "/openapi.json"
-        print(openapi_url)
+        logger.debug("Serving the Swagger UI page")
         if show_docs:
             return get_swagger_ui_html(openapi_url=openapi_url, title="Swagger")
         else:
