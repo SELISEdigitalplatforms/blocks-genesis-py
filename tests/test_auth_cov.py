@@ -344,8 +344,12 @@ async def test_get_tenant_cert_no_params():
 async def test_get_tenant_cert_cache_hit():
     tenant = MagicMock()
     tenant.jwt_token_parameters.public_certificate_path = '/p'
-    cache = MagicMock(); cache.get_bytes_value.return_value = b'cached'
-    assert await auth.get_tenant_cert(cache, tenant, 'tid') == b'cached'
+    auth._certificate_cache.set(f"tetocertpublic::tid::{auth._path_hash('/p')}", b'cached', 60)
+    cache = MagicMock()
+    with patch(AU + 'fetch_cert_bytes', new_callable=AsyncMock) as fetch:
+        assert await auth.get_tenant_cert(cache, tenant, 'tid') == b'cached'
+    fetch.assert_not_awaited()
+    cache.get_bytes_value.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -357,11 +361,11 @@ async def test_get_tenant_cert_fetch_and_cache(mock_fetch, valid_cert_pem):
     tenant.jwt_token_parameters.issue_date = datetime.now(timezone.utc)
     tenant.jwt_token_parameters.certificate_valid_for_number_of_days = 365
     cache = MagicMock()
-    cache.get_bytes_value.side_effect = Exception('miss')
     cache.add_bytes_value_async = AsyncMock()
     mock_fetch.return_value = valid_cert_pem
     assert await auth.get_tenant_cert(cache, tenant, 'tid') == valid_cert_pem
-    cache.add_bytes_value_async.assert_awaited()
+    assert auth._certificate_cache.get(f"tetocertpublic::tid::{auth._path_hash('/p')}") == valid_cert_pem
+    cache.add_bytes_value_async.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -382,19 +386,22 @@ async def test_get_tenant_cert_fetch_none(mock_fetch):
     (datetime(2020, 1, 1, tzinfo=timezone.utc), 10),
 ])
 @patch(AU + 'fetch_cert_bytes', new_callable=AsyncMock)
-async def test_get_tenant_cert_ttl_ignores_issue_date(mock_fetch, issue_date, valid_days, valid_cert_pem):
+async def test_get_tenant_cert_ttl_ignores_issue_date(mock_fetch, issue_date, valid_days, valid_cert_pem, monkeypatch):
     """The certificate's own dates set the TTL; IssueDate is no longer read."""
+    now = 1000.0
+    monkeypatch.setattr(auth, '_certificate_cache', auth._CertificateCache(lambda: now))
     tenant = MagicMock()
     tenant.jwt_token_parameters.public_certificate_path = '/p'
     tenant.jwt_token_parameters.public_certificate_password = None
     tenant.jwt_token_parameters.issue_date = issue_date
     tenant.jwt_token_parameters.certificate_valid_for_number_of_days = valid_days
-    cache = MagicMock(); cache.get_bytes_value.return_value = None
-    cache.add_bytes_value_async = AsyncMock()
+    cache = MagicMock()
     mock_fetch.return_value = valid_cert_pem
     assert await auth.get_tenant_cert(cache, tenant, 'tid') == valid_cert_pem
-    cache.add_bytes_value_async.assert_awaited_once()
-    assert cache.add_bytes_value_async.await_args.args[2] == auth.PRIMARY_CERTIFICATE_CACHE_TTL_SECONDS
+    key = f"tetocertpublic::tid::{auth._path_hash('/p')}"
+    entries = auth._certificate_cache._entries
+    assert list(entries) == [key]
+    assert entries[key][1] == now + auth.PRIMARY_CERTIFICATE_CACHE_TTL_SECONDS
 
 
 @pytest.mark.asyncio

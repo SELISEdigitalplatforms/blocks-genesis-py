@@ -162,15 +162,22 @@ def test_normalize_cache_update():
 @pytest.mark.asyncio
 async def test_apply_update_message_all_paths():
     s = _svc()
+    find_one = AsyncMock(return_value=None)
+    s.database.__getitem__.return_value.find_one = find_one
     s._tenant_cache = {'t1': _t('t1')}
     await s._apply_update_message(TenantCacheUpdateMessage(action='remove', tenant_id='t1'))
     assert 't1' not in s._tenant_cache
     await s._apply_update_message(TenantCacheUpdateMessage(action='upsert'))
+    find_one.assert_not_awaited()
+    # The database, not the message, decides whether the tenant is disabled.
     s._tenant_cache = {'t2': _t('t2')}
-    await s._apply_update_message(TenantCacheUpdateMessage(action='upsert', tenant=_t('t2', disabled=True)))
+    find_one.return_value = {'_id': 't2', 'TenantId': 't2', 'IsDisabled': True}
+    await s._apply_update_message(TenantCacheUpdateMessage(action='upsert', tenant=_t('t2')))
     assert 't2' not in s._tenant_cache
+    find_one.return_value = {'_id': 't3', 'TenantId': 't3', 'DbConnectionString': 'db-conn'}
     await s._apply_update_message(TenantCacheUpdateMessage(action='upsert', tenant=_t('t3')))
-    assert 't3' in s._tenant_cache
+    assert s._tenant_cache['t3'].db_connection_string == 'db-conn'
+    find_one.assert_awaited_with({'$or': [{'_id': 't3'}, {'TenantId': 't3'}]})
 
 
 @pytest.mark.asyncio

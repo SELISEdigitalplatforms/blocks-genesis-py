@@ -145,11 +145,15 @@ async def _validate(token, provider, cache=None):
 
 
 class _DictCache:
+    """Stands in for Redis, which certificates must never be read from or written to."""
+
     def __init__(self):
         self.store = {}
+        self.reads = []
         self.writes = []
 
     def get_bytes_value(self, key):
+        self.reads.append(key)
         return self.store.get(key)
 
     async def add_bytes_value_async(self, key, value, ttl):
@@ -163,6 +167,15 @@ class _Clock:
 
     def __call__(self):
         return self.now
+
+
+@pytest.fixture
+def cert_cache(monkeypatch):
+    """The in-process certificate cache, on a clock the test controls."""
+    clock = _Clock()
+    cache = auth._CertificateCache(clock)
+    monkeypatch.setattr(auth, "_certificate_cache", cache)
+    return cache, clock
 
 
 # ---------------------------------------------------------------------------
@@ -522,7 +535,7 @@ async def test_file_path_refused_for_third_party_provider(rsa_key, valid_pem, tm
     assert not _opened(spy, "/etc/hosts")
 
 
-async def test_file_path_allowed_for_primary_tenant(valid_pem, tmp_path):
+async def test_file_path_allowed_for_primary_tenant(valid_pem, tmp_path, cert_cache):
     path = tmp_path / "tenant.cer"
     path.write_bytes(valid_pem)
     cache = _DictCache()
@@ -530,7 +543,8 @@ async def test_file_path_allowed_for_primary_tenant(valid_pem, tmp_path):
     result = await auth.get_tenant_cert(cache, _primary_tenant(str(path)), "ABC001")
 
     assert result == valid_pem
-    assert len(cache.writes) == 1
+    assert len(cert_cache[0]._entries) == 1
+    assert cache.reads == [] and cache.writes == []
 
 
 async def test_http_provider_certificate_refused_outside_local(rsa_key, dns, http):
@@ -789,7 +803,7 @@ def test_auth_has_no_pyjwkclient():
 # Certificate validity and cache keys
 # ---------------------------------------------------------------------------
 
-async def test_expired_provider_certificate_rejected(rsa_key, expired_pem, caplog):
+async def test_expired_provider_certificate_rejected(rsa_key, expired_pem, caplog, cert_cache):
     caplog.set_level(logging.INFO)
     cache = _DictCache()
     provider = _provider(PublicCertificatePath="https://abc.example/a.crt")
@@ -798,6 +812,7 @@ async def test_expired_provider_certificate_rejected(rsa_key, expired_pem, caplo
         assert await _validate(_sign(rsa_key), provider, cache) is None
 
     assert "third_party_certificate_not_valid" in caplog.text
+    assert cert_cache[0]._entries == {}
     assert cache.writes == []
 
 
@@ -809,26 +824,28 @@ async def test_not_yet_valid_provider_certificate_rejected(rsa_key, not_yet_vali
 
 
 async def test_cached_expired_provider_certificate_rejected(rsa_key, expired_pem):
-    cache = MagicMock()
-    cache.get_bytes_value.return_value = expired_pem
-    cache.add_bytes_value_async = AsyncMock()
     provider = _provider(PublicCertificatePath="https://abc.example/a.crt")
+    auth._certificate_cache.set(
+        f"tpprovcert::ABC001::auth0-main::{auth._path_hash(provider.public_certificate_path)}",
+        expired_pem,
+        3600,
+    )
 
     with patch.object(auth, "fetch_cert_bytes", new_callable=AsyncMock) as fetch:
-        assert await _validate(_sign(rsa_key), provider, cache) is None
+        assert await _validate(_sign(rsa_key), provider, MagicMock()) is None
     fetch.assert_not_awaited()
 
 
-async def test_expired_primary_certificate_not_returned_or_cached(expired_pem, caplog):
+async def test_expired_primary_certificate_not_returned_or_cached(expired_pem, caplog, cert_cache):
     caplog.set_level(logging.INFO)
     cache = MagicMock()
-    cache.get_bytes_value.return_value = None
     cache.add_bytes_value_async = AsyncMock()
 
     with patch.object(auth, "fetch_cert_bytes", new_callable=AsyncMock, return_value=expired_pem):
         result = await auth.get_tenant_cert(cache, _primary_tenant("https://certs.example/t.cer"), "ABC001")
 
     assert result is None
+    assert cert_cache[0]._entries == {}
     cache.add_bytes_value_async.assert_not_awaited()
     assert "tenant_certificate_not_valid" in caplog.text
 
@@ -843,22 +860,24 @@ async def test_validate_jwt_token_refuses_expired_cached_certificate(expired_pem
     assert err.value.status_code == 500
 
 
-async def test_primary_cache_ttl_capped(rsa_key, valid_pem):
+async def test_primary_cache_ttl_capped(rsa_key, valid_pem, cert_cache):
+    cache, clock = cert_cache
     tenant = _primary_tenant("https://certs.example/t.cer")
 
-    cache = _DictCache()
     with patch.object(auth, "fetch_cert_bytes", new_callable=AsyncMock, return_value=valid_pem):
-        await auth.get_tenant_cert(cache, tenant, "ABC001")
-    assert cache.writes[0][2] == 3600
+        await auth.get_tenant_cert(MagicMock(), tenant, "ABC001")
+    [(_, expiry)] = cache._entries.values()
+    assert expiry - clock.now == 3600
 
     short = _cert_pem(rsa_key, _now() - datetime.timedelta(days=1), _now() + datetime.timedelta(seconds=120))
-    cache = _DictCache()
+    cache.clear()
     with patch.object(auth, "fetch_cert_bytes", new_callable=AsyncMock, return_value=short):
-        await auth.get_tenant_cert(cache, tenant, "ABC001")
-    assert 1 <= cache.writes[0][2] <= 120
+        await auth.get_tenant_cert(MagicMock(), tenant, "ABC001")
+    [(_, expiry)] = cache._entries.values()
+    assert 1 <= expiry - clock.now <= 120
 
 
-async def test_changed_primary_path_not_served_from_cache(valid_pem):
+async def test_changed_primary_path_not_served_from_cache(valid_pem, cert_cache):
     cache = _DictCache()
     path_a = "https://certs.example/tenant-a.cer"
     path_b = "https://certs.example/tenant-b.cer"
@@ -869,12 +888,13 @@ async def test_changed_primary_path_not_served_from_cache(valid_pem):
 
     assert fetch.await_count == 2
     assert fetch.await_args.args[0] == path_b
-    key_a, key_b = (write[0] for write in cache.writes)
+    key_a, key_b = cert_cache[0]._entries
     assert key_a != key_b
     assert path_a not in key_a and path_b not in key_b
+    assert cache.reads == [] and cache.writes == []
 
 
-async def test_changed_provider_path_not_served_from_cache(rsa_key, valid_pem):
+async def test_changed_provider_path_not_served_from_cache(rsa_key, valid_pem, cert_cache):
     cache = _DictCache()
     path_a = "https://abc.example/a.crt"
     path_b = "https://abc.example/b.crt"
@@ -885,7 +905,8 @@ async def test_changed_provider_path_not_served_from_cache(rsa_key, valid_pem):
 
     assert fetch.await_count == 2
     assert fetch.await_args.args[0] == path_b
-    key_a, key_b = (write[0] for write in cache.writes)
+    key_a, key_b = cert_cache[0]._entries
     assert key_a.startswith("tpprovcert::ABC001::auth0-main::")
     assert key_a != key_b
     assert path_a not in key_a and path_b not in key_b
+    assert cache.reads == [] and cache.writes == []

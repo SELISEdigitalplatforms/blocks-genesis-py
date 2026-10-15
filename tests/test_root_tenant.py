@@ -41,14 +41,19 @@ async def test_async_getter_loads_once_on_cold_service():
 
 @pytest.mark.asyncio
 async def test_pubsub_upsert_cannot_change_root_tenant():
-    s = _service(AsyncMock(return_value={'_id': 'root', 'TenantId': 'root'}))
+    async def find_one(query, **_):
+        if query == {'IsRootTenant': True}:
+            return {'_id': 'root', 'TenantId': 'root', 'IsRootTenant': True}
+        return {'_id': 'other', 'TenantId': 'other'}
+
+    s = _service(find_one)
     await s.initialize()
     message = json.dumps({
         'Action': 'upsert',
         'Tenant': {'_id': 'other', 'TenantId': 'other', 'IsRootTenant': True},
     })
     await s._handle_update(message)
-    assert 'other' in s._tenant_cache
+    assert s._tenant_cache['other'].is_root_tenant is False
     assert s.get_root_tenant_id() == 'root'
     assert await s.get_root_tenant_id_async() == 'root'
 

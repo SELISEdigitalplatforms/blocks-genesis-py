@@ -316,6 +316,7 @@ Notes:
 
 - `authorize(resource_name, bypass_authorization=False)` returns a FastAPI dependency. `resource_name` is required unless `bypass_authorization=True`; a missing name on a protected endpoint raises `ValueError` at route definition time.
 - `get_tenant_service().get_root_tenant_id_async()` returns the root tenant's id, read from the root database (loaded once at startup, or on first call if that load failed); the sync `get_root_tenant_id()` returns the same stored id. Tenant updates on the cache channel never change it.
+- A tenant update on the cache channel only names the tenant: each process re-reads that tenant from the root database and never applies the message's own fields. A tenant missing or disabled there is dropped; if the read fails, the process keeps its current copy.
 - `MessageConfiguration.resolve_provider()` auto-selects RabbitMQ for `amqp://`/`amqps://` connection strings and Azure Service Bus otherwise, when neither sub-configuration is set explicitly.
 
 ## Configuration
@@ -350,7 +351,7 @@ Token signing keys and certificates are downloaded under these rules:
 - A third-party provider's `JwksUrl` or `PublicCertificatePath` must resolve only to public addresses. Private, loopback, link-local (including the cloud metadata address), multicast and reserved addresses are refused, in local mode too. File paths are refused for providers.
 - The primary tenant certificate, which the platform writes, may be a file path or an internal address.
 - A JWKS is cached for 10 minutes per URL. A token with an unknown key id refreshes it at most once a minute. If a refresh fails, the last good keys are used for at most 1 hour past the 10 minutes.
-- A certificate outside its validity dates is rejected. Certificates are cached for at most 1 hour, and never past their expiry.
+- A certificate outside its validity dates is rejected. Certificates are cached in each process's memory for at most 1 hour, and never past their expiry; they are never read from or written to Redis.
 
 ### Secrets (Azure Key Vault)
 

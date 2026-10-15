@@ -31,6 +31,16 @@ def delegated_access_configured():
         os.environ[IAM_TOKEN_ENDPOINT_KEY] = previous
 
 
+@pytest.fixture(autouse=True)
+def empty_certificate_cache():
+    """Certificates are cached in process, so one test's certificate must not serve another."""
+    from blocks_genesis._auth import auth
+
+    auth._certificate_cache.clear()
+    yield
+    auth._certificate_cache.clear()
+
+
 @pytest.fixture(scope="session")
 def valid_cert_pem():
     """A self-signed PEM certificate valid from yesterday for a year."""

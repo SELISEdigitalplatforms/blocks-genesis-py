@@ -25,7 +25,6 @@ async def test_fetch_cert_bytes_file(tmp_path):
 @patch('blocks_genesis._auth.auth.fetch_cert_bytes', new_callable=AsyncMock)
 async def test_get_tenant_cert_cache_miss(mock_fetch, valid_cert_pem):
     cache_client = MagicMock()
-    cache_client.get_bytes_value.return_value = None
     cache_client.add_bytes_value_async = AsyncMock()
     tenant = MagicMock()
     tenant.jwt_token_parameters.public_certificate_path = 'certpath'
@@ -35,8 +34,10 @@ async def test_get_tenant_cert_cache_miss(mock_fetch, valid_cert_pem):
     mock_fetch.return_value = valid_cert_pem
     result = await auth.get_tenant_cert(cache_client, tenant, 'tid')
     assert result == valid_cert_pem
-    cache_client.add_bytes_value_async.assert_awaited()
-    assert cache_client.add_bytes_value_async.await_args.args[2] <= 3600
+    key = f"tetocertpublic::tid::{auth._path_hash('certpath')}"
+    assert auth._certificate_cache.get(key) == valid_cert_pem
+    cache_client.get_bytes_value.assert_not_called()
+    cache_client.add_bytes_value_async.assert_not_awaited()
 
 @patch('cryptography.hazmat.primitives.serialization.pkcs12.load_pkcs12')
 def test_create_certificate_success(mock_load):

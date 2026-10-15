@@ -2,7 +2,8 @@ import hashlib
 import json
 import logging
 import asyncio
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple
+import time
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
@@ -456,10 +457,42 @@ def _path_hash(path: str) -> str:
     return hashlib.sha256(path.encode()).hexdigest()[:16]
 
 
+# Certificates are cached in this process only. Redis is shared, so a certificate
+# read from it would let anyone able to write there sign tokens (audit F-05).
+CERTIFICATE_CACHE_MAX_ENTRIES = 4096
+
+
+class _CertificateCache:
+    def __init__(self, time_func: Callable[[], float] = time.monotonic):
+        self._time = time_func
+        self._entries: Dict[str, Tuple[bytes, float]] = {}
+
+    def get(self, key: str) -> Optional[bytes]:
+        entry = self._entries.get(key)
+        if entry is None:
+            return None
+        if self._time() >= entry[1]:
+            self._entries.pop(key, None)
+            return None
+        return entry[0]
+
+    def set(self, key: str, data: bytes, ttl: int) -> None:
+        if key not in self._entries and len(self._entries) >= CERTIFICATE_CACHE_MAX_ENTRIES:
+            self._entries.clear()
+        self._entries[key] = (data, self._time() + ttl)
+
+    def clear(self) -> None:
+        self._entries.clear()
+
+
+_certificate_cache = _CertificateCache()
+
+
 async def get_tenant_cert(cache_client: CacheClient, tenant: Tenant, tenant_id: str) -> Optional[bytes]:
     """
-    Get tenant's public certificate from cache or fetch and cache it.
+    Get tenant's public certificate from the in-process cache or fetch and cache it.
     A certificate outside its validity dates is neither returned nor cached.
+    `cache_client` is not used for certificates.
     """
     if not tenant.jwt_token_parameters:
         return None
@@ -467,13 +500,9 @@ async def get_tenant_cert(cache_client: CacheClient, tenant: Tenant, tenant_id: 
     path = tenant.jwt_token_parameters.public_certificate_path
     cache_key = f"tetocertpublic::{tenant_id}::{_path_hash(path or '')}"
 
-    # Try cache first
-    try:
-        cached = cache_client.get_bytes_value(cache_key)
-        if cached:
-            return cached
-    except Exception:
-        pass
+    cached = _certificate_cache.get(cache_key)
+    if cached:
+        return cached
 
     # The platform writes this path, so it may be a file or an internal address.
     cert_bytes = await fetch_cert_bytes(path, allow_file=True, check_address=False)
@@ -497,10 +526,7 @@ async def get_tenant_cert(cache_client: CacheClient, tenant: Tenant, tenant_id: 
 
     ttl = _certificate_cache_ttl(certificate, PRIMARY_CERTIFICATE_CACHE_TTL_SECONDS)
     if ttl >= 1:
-        try:
-            await cache_client.add_bytes_value_async(cache_key, cert_bytes, ttl)
-        except Exception as e:
-            _logger.warning(f"Failed to cache certificate: {e}")
+        _certificate_cache.set(cache_key, cert_bytes, ttl)
 
     return cert_bytes
 
@@ -706,21 +732,12 @@ async def _resolve_certificate_key(
         if password is None:
             return None
 
-    # Optional on purpose: without a cache the certificate is simply fetched each time,
-    # which is slower but still correct. Failing the token instead would make a cache
-    # outage look like a provider misconfiguration.
     cache_key = (
         f"tpprovcert::{provider.tenant_id}::{provider.key}::"
         f"{_path_hash(provider.public_certificate_path)}"
     )
-    certificate_data = None
     fetched = False
-
-    if cache_client is not None:
-        try:
-            certificate_data = cache_client.get_bytes_value(cache_key)
-        except Exception:
-            certificate_data = None
+    certificate_data = _certificate_cache.get(cache_key)
 
     if not certificate_data:
         try:
@@ -765,13 +782,10 @@ async def _resolve_certificate_key(
         )
         return None
 
-    if fetched and cache_client is not None:
+    if fetched:
         ttl = _certificate_cache_ttl(certificate, PROVIDER_CERTIFICATE_CACHE_TTL_SECONDS)
         if ttl >= 1:
-            try:
-                await cache_client.add_bytes_value_async(cache_key, certificate_data, ttl)
-            except Exception:
-                pass
+            _certificate_cache.set(cache_key, certificate_data, ttl)
 
     return certificate.public_key().public_bytes(
         encoding=serialization.Encoding.PEM,
