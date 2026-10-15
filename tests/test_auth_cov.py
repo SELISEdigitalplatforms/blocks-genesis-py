@@ -1,5 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+from starlette.datastructures import URL
 from blocks_genesis._auth import auth
 
 AU = 'blocks_genesis._auth.auth.'
@@ -420,7 +421,7 @@ async def test_validate_jwt_success(mock_gtc, mock_cc, mock_jwt):
     cert = MagicMock(); cert.public_key.return_value.public_bytes.return_value.decode.return_value = 'pem'
     mock_cc.return_value = cert
     mock_jwt.decode.return_value = {'sub': 'u1'}
-    req = MagicMock(); req.url = 'http://x'
+    req = MagicMock(); req.url = URL('http://x/')
     result = await auth.validate_jwt_token('tok', MagicMock(), MagicMock(), req)
     assert result['sub'] == 'u1'
 

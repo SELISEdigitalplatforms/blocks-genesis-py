@@ -10,33 +10,8 @@ from blocks_genesis._auth.blocks_context import BlocksContextManager
 from blocks_genesis._lmt.activity import Activity
 from blocks_genesis._tenant.tenant import Tenant
 from blocks_genesis._tenant.tenant_service import get_tenant_service
+from blocks_genesis._lmt.redaction import SENSITIVE_KEYS, is_sensitive_key, sanitize_dict  # noqa: F401 - re-exported
 import json
-SENSITIVE_KEYS = {
-    "authorization",
-    "cookie",
-    "set-cookie",
-    "secret",
-    "x-blocks-service-key",
-    "x-api-key",
-    "token",
-    "access_token",
-    "refresh_token",
-    "password",
-}
-
-def is_sensitive_key(key: str) -> bool:
-    if not key:
-        return False
-    key_lower = key.lower()
-    return (
-        key_lower in SENSITIVE_KEYS
-        or "token" in key_lower
-        or "secret" in key_lower
-        or "password" in key_lower
-    )
-
-def sanitize_dict(d: dict) -> dict:
-    return {k: ("[REDACTED]" if is_sensitive_key(k) else v) for k, v in d.items()}
 
 
 async def tee_body_iterator(
@@ -114,7 +89,6 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
                 impersonated=False
             )
             BlocksContextManager.set_context(ctx)
-            Activity.set_current_property("SecurityContext", str(ctx.__dict__))
 
             request_size = int(request.headers.get("content-length", 0))
 

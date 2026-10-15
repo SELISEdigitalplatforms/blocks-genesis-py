@@ -247,7 +247,7 @@ async def authenticate(
                 user_name=mapped["user_name"],
                 display_name=mapped["display_name"],
                 application_domain=application_domain or "",
-                request_uri=str(request.url),
+                request_uri=str(request.url.path),
             )
         except ValueError as err:
             security_log(
@@ -501,7 +501,7 @@ async def validate_jwt_token(
         )
         
         # Enrich payload with request metadata
-        payload[BlocksContext.REQUEST_URI_CLAIM] = str(request.url)
+        payload[BlocksContext.REQUEST_URI_CLAIM] = str(request.url.path)
         payload[BlocksContext.TOKEN_CLAIM] = token
         
         return payload
@@ -940,21 +940,15 @@ def map_third_party_claims(
 
 def _report_selection_failure(
     selection,
-    issuer: str,
-    audiences: List[str],
     providers: List[ThirdPartyJwtProvider],
     header_key: Optional[str],
 ) -> None:
-    """Explain a selection miss in the terms an operator can act on: what the token
-    carried, beside what is configured."""
+    """Explain a selection miss by provider keys, without the token's or the providers'
+    issuer and audiences."""
     detail = {
-        "tokenIssuer": issuer,
-        "tokenAudiences": audiences,
         "headerKey": header_key,
         "candidates": selection.candidate_count,
-        "configured": [
-            {"Key": p.key, "Issuer": p.issuer, "Audiences": p.audiences} for p in providers
-        ],
+        "configuredKeys": [p.key for p in providers],
     }
 
     outcome = selection.outcome
@@ -1125,7 +1119,7 @@ async def _run_fallback(
     selection = select_third_party_provider(providers, issuer, audiences, header_key)
 
     if not selection.is_selected:
-        _report_selection_failure(selection, issuer, audiences, providers, header_key)
+        _report_selection_failure(selection, providers, header_key)
         return None, selection.outcome
 
     provider = selection.provider
@@ -1173,7 +1167,7 @@ async def _run_fallback(
         )
         return None, ThirdPartyProviderSelection.SELECTED
 
-    claims[BlocksContext.REQUEST_URI_CLAIM] = str(request.url)
+    claims[BlocksContext.REQUEST_URI_CLAIM] = str(request.url.path)
 
     security_log(
         "fallback_token_validated",

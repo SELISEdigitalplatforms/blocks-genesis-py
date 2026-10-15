@@ -19,6 +19,7 @@ from blocks_genesis._delegation.grant_binding import (
 )
 from blocks_genesis._delegation.grant_store import get_delegation_grant_store
 from blocks_genesis._delegation.token_provider import get_delegated_token_provider
+from blocks_genesis._lmt.redaction import safe_baggage_items
 from blocks_genesis._message.consumer import Consumer
 from blocks_genesis._message.event_message import EventMessage
 from blocks_genesis._message.message_configuration import MessageConfiguration
@@ -204,15 +205,13 @@ class AzureMessageWorker:
             ) as span:
                 span.set_attribute("messaging.system", "azure.servicebus")
                 span.set_attribute("message.id", message_id)
-                span.set_attribute("SecurityContext", security_context_raw)
-                span.set_attribute("message.body", str(message))
                 span.set_attribute("baggage.TenantId", tenant_id)
                 span.set_attribute("usage", True)
 
                 try:
                     baggages = json.loads(baggage_str)
                     if isinstance(baggages, dict):
-                        for key, value in baggages.items():
+                        for key, value in safe_baggage_items(baggages).items():
                             span.set_attribute(f"baggage.{key}", value)
                     else:
                         self._logger.warning("Baggage header is not a JSON object; ignored")
@@ -256,6 +255,8 @@ class AzureMessageWorker:
                     raise _UndecodableMessage() from ex
 
                 msg = EventMessage(**json.loads(d))
+                span.set_attribute("message.size", len(d.encode("utf-8")))
+                span.set_attribute("message.type", msg.type)
                 await self._consumer.process_message(msg.type, msg.body)
                 processing_time = (asyncio.get_event_loop().time() - start_time) * 1000
                 self._logger.info(

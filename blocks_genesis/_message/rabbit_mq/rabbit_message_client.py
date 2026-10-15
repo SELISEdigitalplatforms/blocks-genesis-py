@@ -91,10 +91,10 @@ class RabbitMessageClient(MessageClient):
             task.add_done_callback(_pending_grant_deletes.discard)
 
         logger.warning(
-            "Message returned: exchange=%s, routing_key=%s, body=%s",
+            "Message returned: exchange=%s, routing_key=%s, size=%d",
             message.exchange,
             message.routing_key,
-            message.body.decode("utf-8") if message.body else "",
+            len(message.body or b""),
         )
 
     @staticmethod

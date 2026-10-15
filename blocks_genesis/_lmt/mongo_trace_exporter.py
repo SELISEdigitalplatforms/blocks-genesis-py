@@ -1,12 +1,22 @@
 # mongo_trace_exporter.py
 
 from datetime import datetime
+import re
 import threading
 from queue import Queue, Empty
 from pymongo import MongoClient, errors
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from blocks_genesis._core.secret_loader import get_blocks_secret
 import time
+
+_COLLECTION_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def _trace_collection(tenant_id) -> str:
+    """The tenant id names the trace collection only if it is a plain id; anything else goes to miscellaneous."""
+    if isinstance(tenant_id, str) and _COLLECTION_NAME.fullmatch(tenant_id):
+        return tenant_id
+    return "miscellaneous"
 
 
 class MongoDBTraceExporter(SpanExporter):
@@ -37,7 +47,7 @@ class MongoDBTraceExporter(SpanExporter):
         try:
             for span in spans:
                 baggage_items = self._extract_baggage_from_span(span)
-                tenant_id = baggage_items.get("TenantId") or "miscellaneous"
+                tenant_id = _trace_collection(baggage_items.get("TenantId"))
 
                 doc = self._build_document(span, baggage_items, tenant_id)
                 self._queue.put_nowait((tenant_id, doc))

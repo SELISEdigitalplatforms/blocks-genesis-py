@@ -15,6 +15,7 @@ from blocks_genesis._delegation.context import DelegatedTokenContext
 from blocks_genesis._delegation.grant_binding import check_grant_binding
 from blocks_genesis._delegation.grant_store import get_delegation_grant_store
 from blocks_genesis._delegation.token_provider import get_delegated_token_provider
+from blocks_genesis._lmt.redaction import safe_baggage_items
 from blocks_genesis._message.consumer import Consumer
 from blocks_genesis._message.event_message import EventMessage
 from blocks_genesis._message.message_configuration import ConsumerSubscription, MessageConfiguration
@@ -143,7 +144,7 @@ class RabbitMessageWorker:
             ) as span:
                 span.set_attribute("messaging.system", "rabbitmq")
                 span.set_attribute("messaging.destination.name", subscription.queue_name)
-                span.set_attribute("SecurityContext", security_context_raw)
+                span.set_attribute("message.id", message.message_id or "")
                 span.set_attribute("baggage.TenantId", tenant_id)
                 span.set_attribute("usage", True)
 
@@ -151,8 +152,8 @@ class RabbitMessageWorker:
                     try:
                         baggages = json.loads(baggage_str)
                         if isinstance(baggages, dict):
-                            for key, value in baggages.items():
-                                span.set_attribute(f"baggage.{key}", str(value))
+                            for key, value in safe_baggage_items(baggages).items():
+                                span.set_attribute(f"baggage.{key}", value)
                         else:
                             logger.warning("Baggage header is not a JSON object; ignored.")
                     except (json.JSONDecodeError, TypeError):
@@ -160,11 +161,12 @@ class RabbitMessageWorker:
 
                     body_bytes = message.body
                     body_str = body_bytes.decode("utf-8") if isinstance(body_bytes, (bytes, bytearray)) else str(body_bytes)
-                    span.set_attribute("message.body", body_str)
+                    span.set_attribute("message.size", len(body_bytes))
                     logger.info(
-                        "Received RabbitMQ message on queue '%s'. Body: %s",
+                        "Received RabbitMQ message %s on queue '%s' (%d bytes).",
+                        message.message_id,
                         subscription.queue_name,
-                        body_str,
+                        len(body_bytes),
                     )
 
                     if not security_context_valid:
@@ -187,6 +189,7 @@ class RabbitMessageWorker:
 
                     grant_verified = True
                     event = EventMessage(**json.loads(body_str))
+                    span.set_attribute("message.type", event.type)
                     await self._consumer.process_message(event.type, event.body)
                     span.set_status(StatusCode.OK, "Message processed successfully")
                     logger.info("Message processed successfully.")
