@@ -61,7 +61,8 @@ class AzureKeyVault:
             secret = await self.secret_client.get_secret(key)
             return secret.value
         except Exception as exc:
-            logging.warning("Error retrieving secret '%s' from Key Vault: %s", key, exc)
+            # The exception text can echo request details, so only its type is logged.
+            logging.warning("Error retrieving secret '%s' from Key Vault: %s", key, type(exc).__name__)
             return ""
 
     async def close(self) -> None:
