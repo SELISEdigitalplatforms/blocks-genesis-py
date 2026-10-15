@@ -183,6 +183,16 @@ redeems that id at IAM (RFC 8693 token exchange) for a normal, short-lived acces
 original user's tenant, organization, roles and permissions. A long job can redeem as often as it
 needs; nothing rotates, so retries are safe.
 
+**Receiving checks the grant.** When a message carries a grant, the worker reads the grant record
+before the handler runs and compares it with the restored `SecurityContext`: tenant, user and
+organization, plus the client for a grant made by an OAuth client. If they differ, or the record is
+gone (expired, evicted or never written to this Redis), the handler does not run. Azure Service Bus
+dead-letters the message with reason `DelegationGrantMismatch` and a reason code in the
+description; RabbitMQ acks it and logs an error. Either way the grant is kept, and its TTL removes
+it. A message with no grant is handled as before. If you pass `ConsumerMessage.context` yourself, it
+must name the same tenant, user and organization as the sender's own context, because the grant is
+built from the sender's context.
+
 The wire format is identical to `blocks-genesis-net` — grant id shape, signature input, Redis keys,
 JSON field names, header names — and a shared conformance vector is asserted in both SDKs.
 

@@ -12,6 +12,7 @@ from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapProp
 from blocks_genesis._auth.blocks_context import BlocksContextManager
 from blocks_genesis._delegation.constants import DELEGATION_GRANT_HEADER
 from blocks_genesis._delegation.context import DelegatedTokenContext
+from blocks_genesis._delegation.grant_binding import check_grant_binding
 from blocks_genesis._delegation.grant_store import get_delegation_grant_store
 from blocks_genesis._delegation.token_provider import get_delegated_token_provider
 from blocks_genesis._message.consumer import Consumer
@@ -157,11 +158,21 @@ class RabbitMessageWorker:
 
             processed_successfully = False
             try:
-                event = EventMessage(**json.loads(body_str))
-                await self._consumer.process_message(event.type, event.body)
-                span.set_status(StatusCode.OK, "Message processed successfully")
-                logger.info("Message processed successfully.")
-                processed_successfully = True
+                refusal = await check_grant_binding(
+                    BlocksContextManager.get_context(),
+                    delegation_grant,
+                    get_delegation_grant_store(),
+                    message.message_id,
+                )
+                if refusal:
+                    # Acked like any other message, without a release: the grant's TTL removes it.
+                    span.set_status(StatusCode.ERROR, refusal)
+                else:
+                    event = EventMessage(**json.loads(body_str))
+                    await self._consumer.process_message(event.type, event.body)
+                    span.set_status(StatusCode.OK, "Message processed successfully")
+                    logger.info("Message processed successfully.")
+                    processed_successfully = True
             except Exception as ex:
                 logger.exception("Error processing RabbitMQ message.")
                 span.set_status(StatusCode.ERROR, str(ex))
