@@ -154,7 +154,7 @@ message_config = MessageConfiguration(
 app = WorkerConsoleApp("my_worker", message_config, {"DemoEvent": handle_demo_event})
 ```
 
-Start the consume loop with `asyncio.run(app.run(callback))`, where `callback` is an async function invoked once the worker is ready. The mapping passed as the third argument registers one handler per payload type.
+Start the consume loop with `asyncio.run(app.run(callback))`, where `callback` is an async function invoked once the worker is ready. The mapping passed as the third argument registers one handler per payload type. A handler may be an async function or a class with a no-argument constructor and an async `handle(self, data)` method.
 
 ### Publishing a message
 
@@ -183,6 +183,27 @@ redeems that id at IAM (RFC 8693 token exchange) for a normal, short-lived acces
 original user's tenant, organization, roles and permissions. A long job can redeem as often as it
 needs; nothing rotates, so retries are safe.
 
+**Receiving checks the grant.** When a message carries a grant, the worker reads the grant record
+before the handler runs and compares it with the restored `SecurityContext`: tenant, user and
+organization, plus the client for a grant made by an OAuth client. If they differ, or the record is
+gone (expired, evicted or never written to this Redis), the handler does not run. Azure Service Bus
+dead-letters the message with reason `DelegationGrantMismatch` and a reason code in the
+description; RabbitMQ acks it and logs an error. Either way the grant is kept, and its TTL removes
+it. A message with no grant is handled as before. If you pass `ConsumerMessage.context` yourself, it
+must name the same tenant, user and organization as the sender's own context, because the grant is
+built from the sender's context.
+
+A `SecurityContext` header that is present but cannot be read (not JSON, not a JSON object, or not
+a valid context) is refused the same way, before the grant is checked: Azure Service Bus
+dead-letters the message with reason `InvalidSecurityContext`, and RabbitMQ acks it and logs an
+error. Neither the header nor the parse error is logged. A missing or empty header (`""` or `{}`)
+still runs the handler with no context.
+
+A message whose `SecurityContext` names a tenant that is missing or disabled is refused the same
+way, before the grant is checked: Azure Service Bus dead-letters it with reason `TenantUnavailable`,
+and RabbitMQ acks it and logs an error. If the tenant cannot be read, the message takes the normal
+failure path.
+
 The wire format is identical to `blocks-genesis-net` — grant id shape, signature input, Redis keys,
 JSON field names, header names — and a shared conformance vector is asserted in both SDKs.
 
@@ -202,6 +223,10 @@ await MessageClient.get_instance().send_to_consumer_async(
     )
 )
 ```
+
+A grant lives at most two days (a longer `delegation_ttl_seconds` is cut to two days), and a grant
+whose message was not delivered, because the send failed or RabbitMQ returned it as unroutable, is
+deleted at once.
 
 ### Using the token is explicit, per call
 
@@ -265,8 +290,14 @@ the public host.**
 - Restrict Redis writes to `delegation:*` to the delegation component; write access there is
   impersonation authority.
 - The exchange signature has a ±60s clock window, so **NTP must be correct** on worker and IAM nodes.
-- A grant is deleted only after a successful run (business op → ACK → DEL). A failed run keeps its
-  grant so a redelivery still works; the absolute TTL is the backstop.
+- A grant is deleted only after the message is settled for good, in the order business op → settle
+  → DEL. RabbitMQ acks every message once (no retry), so it deletes the grant after the ack whether
+  the handler succeeded or failed. Azure Service Bus deletes it after completing the message, or
+  after dead-lettering it on its final attempt (reason `ProcessingFailed`; the final attempt is
+  judged from the configured `queue_max_delivery_count` or `topic_subscription_max_delivery_count`)
+  or because it could not be decoded (reason `UndecodableMessage`). An abandoned message keeps its
+  grant so the redelivery still works. A refused message, or one whose grant was never checked,
+  keeps its grant until the absolute TTL. A failed delete is logged and left to the TTL.
 
 ## Public API
 
@@ -289,6 +320,9 @@ Everything below is importable from the top-level `blocks_genesis` package.
 Notes:
 
 - `authorize(resource_name, bypass_authorization=False)` returns a FastAPI dependency. `resource_name` is required unless `bypass_authorization=True`; a missing name on a protected endpoint raises `ValueError` at route definition time.
+- `get_tenant_service().get_root_tenant_id_async()` returns the root tenant's id, read from the root database (loaded once at startup, or on first call if that load failed); the sync `get_root_tenant_id()` returns the same stored id. Tenant updates on the cache channel never change it.
+- A tenant update on the cache channel only names the tenant: each process re-reads that tenant from the root database and never applies the message's own fields. A tenant missing or disabled there is dropped; if the read fails, the process keeps its current copy.
+- Each process re-reads a cached tenant from the root database once it is a minute old; a tenant that is missing or disabled there is dropped, and if the read fails the current copy is kept for another minute. A disabled tenant is treated as unknown, and an unknown tenant key or domain is remembered for 30 seconds. Revalidation costs one root-database read per cached tenant per minute in each process, and on RabbitMQ a message whose tenant cannot be read is acknowledged and logged rather than retried (Azure Service Bus retries it).
 - `MessageConfiguration.resolve_provider()` auto-selects RabbitMQ for `amqp://`/`amqps://` connection strings and Azure Service Bus otherwise, when neither sub-configuration is set explicitly.
 
 ## Configuration
@@ -303,6 +337,33 @@ from blocks_genesis import load_configurations, get_configurations
 load_configurations("config")  # loads config/<APP_ENV>.json, APP_ENV defaults to dev
 settings = get_configurations()
 ```
+
+### Origin and proxy settings
+
+The two `BLOCKS_` settings are read from the environment first (comma-separated), then from a top-level key of the loaded configuration (a list or comma-separated values).
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `BLOCKS_CORS_ALLOWED_ORIGINS` | none | Origins CORS allows in addition to the tenants' application domains, for example `https://admin.example.com`. |
+| `BLOCKS_TRUSTED_PROXY_HOSTS` | `*` | Hosts (IP addresses or CIDR networks) whose `X-Forwarded-For` and `X-Forwarded-Proto` are trusted. When it is `*` and the service is not local, a warning is logged at startup. |
+| `is_local` | `false` | Configuration key only. `true` marks a local deployment, the only case where `localhost` origins are accepted. A service that never calls `load_configurations` is treated as not local. |
+
+### Signing key fetching
+
+Token signing keys and certificates are downloaded under these rules:
+
+- Only `https` URLs are fetched. `http` is accepted only when `is_local` is `true`.
+- Redirects are not followed. Each download has a 5 s timeout and a 1 MiB size limit.
+- A third-party provider's `JwksUrl` or `PublicCertificatePath` must resolve only to public addresses. Private, loopback, link-local (including the cloud metadata address), multicast and reserved addresses are refused, in local mode too. File paths are refused for providers.
+- The primary tenant certificate, which the platform writes, may be a file path or an internal address.
+- A JWKS is cached for 10 minutes per URL. A token with an unknown key id refreshes it at most once a minute. If a refresh fails, the last good keys are used for at most 1 hour past the 10 minutes.
+- A certificate outside its validity dates is rejected. Certificates are cached in each process's memory for at most 1 hour, and never past their expiry; they are never read from or written to Redis.
+
+### Third-party tokens
+
+- A token from a tenant's own identity provider must carry `exp`. Up to 5 minutes of clock difference is allowed, as in blocks-genesis-net.
+- Claims Genesis sets itself are removed from a provider's token before anything reads it: tenant, user, organization, roles, permissions, impersonation, client, session, phone, `oauth`, `request_uri`, `token_version` and `security_stamp`. A message sent for a third-party caller therefore carries no delegation grant built from the provider's values.
+- A provider with no `Issuer`, no `Audiences`, or still on the `default` organization is accepted, as in blocks-genesis-net, and a `[Security]` warning names it once per process.
 
 ### Secrets (Azure Key Vault)
 
@@ -329,24 +390,32 @@ Secret names resolved from the vault (the fields of `BlocksSecret`):
 | `TraceConnectionString` | MongoDB connection string used by the trace exporter. |
 | `LogDatabaseName` | MongoDB database name for logs. |
 | `MetricDatabaseName` | Reserved metric database name. |
-| `TraceDatabaseName` | MongoDB database name for traces. |
+| `TraceDatabaseName` | MongoDB database name for traces. A missing tenant trace collection is created as a time-series collection with a 90-day expiry; an existing plain one gets a 90-day TTL index on `Timestamp`. Both get an index on `TraceId`. |
 | `ServiceName` | Service identifier; overwritten at load time with the name passed to `configure_lifespan` or `WorkerConsoleApp`. |
 | `DatabaseConnectionString` | Root tenant metadata database connection string. |
 | `RootDatabaseName` | Root database containing tenant and authorization metadata. |
 
+Startup fails when `CacheConnectionString`, `DatabaseConnectionString`, or `RootDatabaseName` is missing or empty; the error names the missing secrets, never their values.
+
 ## Endpoints and Middleware Added by configure_genesis
 
-`configure_genesis(app, show_docs=False, serve_static=False, static_mount_path="/", static_dir="")` installs, in order: proxy header handling, gzip compression, tenant validation on paths under `/api`, a global exception handler, OpenTelemetry FastAPI instrumentation, and CORS. With `serve_static=True` it also mounts a static directory (default `./static` in the working directory) at `static_mount_path`.
+`configure_genesis(app, show_docs=False, serve_static=False, static_mount_path="/", static_dir="", cors_origins=None)` installs, in order: proxy header handling, gzip compression, tenant validation on paths under `/api`, a global exception handler, OpenTelemetry FastAPI instrumentation, and CORS. With `serve_static=True` it also mounts a static directory (default `./static` in the working directory) at `static_mount_path`.
 
 It registers these routes on the app:
 
 | Method | Path | Description |
 |---|---|---|
 | GET | `/ping` | Returns `{"status": "healthy", "message": "pong"}`. |
-| GET | `/swagger/index.html` | Swagger UI when `show_docs=True`, otherwise the string `NOT_ALLOWED`. |
-| GET | `/openapi.json` | OpenAPI schema when `show_docs=True`, otherwise an empty object. |
+| GET | `/swagger/index.html` | Swagger UI when `show_docs=True`, otherwise 404. |
+| GET | `/openapi.json` | OpenAPI schema when `show_docs=True`, otherwise 404. |
 
-Tenant validation applies to requests whose path starts with one of the `included_paths` prefixes (default `/api`). The tenant is resolved from the `x-blocks-key` header, the `x-blocks-key` or `tenant_id` query parameter, or the request domain. Requests with an unknown or disabled tenant are rejected, as are requests whose `Origin`/`Referer` domain is not registered for the tenant.
+The API docs routes are off unless `show_docs=True`: with the default `show_docs=False`, FastAPI's own `openapi_url`, `docs_url`, `redoc_url` and Swagger OAuth2 redirect routes are removed as well, so every docs path answers 404.
+
+Tenant validation applies to requests whose path starts with one of the `included_paths` prefixes (default `/api`). The tenant is resolved from the `x-blocks-key` header, the `x-blocks-key` or `tenant_id` query parameter, or the request domain. Requests with an unknown or disabled tenant are rejected, as are requests whose `Origin`/`Referer` domain is not registered for the tenant. A `localhost` origin is accepted only when `is_local` is true. A request with neither header passes this check.
+
+CORS allows an origin when it is in `cors_origins` or `BLOCKS_CORS_ALLOWED_ORIGINS`, when it is an application domain of an enabled tenant, or when it is `localhost` and `is_local` is true. An allowed origin is echoed back, never `*`, with `Access-Control-Allow-Credentials: true` and `Vary: Origin`. Any other origin gets no CORS headers, and its preflight gets 400. Every response carries `Vary: Origin`. A tenant-domain decision is cached for 60 s when allowed and 10 s when refused, and at most 20 uncached lookups run per second per process; beyond that an unknown origin is refused. Preflight requests are answered before tenant validation, so they need no `x-blocks-key`.
+
+The `Authorization: Bearer` header is always accepted. A token in a cookie is read on GET, HEAD and OPTIONS as before; on any other method it is read only when the `Origin` or `Referer` is one of the tenant's application domains (or `localhost` when `is_local` is true). The `localhost` alias cookie is read only when `is_local` is true.
 
 ## Sample Application
 

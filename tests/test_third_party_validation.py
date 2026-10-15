@@ -21,8 +21,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import NameOID
+from starlette.datastructures import URL
 
 from blocks_genesis._auth import auth
+from blocks_genesis._auth.key_fetch import KeyFetchError
 from blocks_genesis._auth.third_party_provider import ThirdPartyJwtProvider
 from blocks_genesis._tenant.tenant import Tenant
 from blocks_genesis._utilities.crypto_service import CryptoService
@@ -99,7 +101,7 @@ def _provider(**kwargs):
 
 def _request(headers=None):
     request = MagicMock()
-    request.url = "https://api.klax.io/x"
+    request.url = URL("https://api.klax.io/x")
     request.headers = headers or {}
     request.query_params = {}
     return request
@@ -166,12 +168,11 @@ async def test_a_jwks_provider_is_preferred_over_a_certificate(keypair):
         JwksUrl="https://abc.eu.auth0.com/.well-known/jwks.json",
         PublicCertificatePath="https://abc.example/auth0.crt",
     )
-    signing_key = MagicMock()
-    signing_key.key = keypair["public_pem"]
+    jwks = MagicMock()
+    jwks.get_signing_key = AsyncMock(return_value=keypair["public_pem"])
 
-    with patch.object(auth, "PyJWKClient") as client, \
+    with patch.object(auth, "get_jwks_cache", return_value=jwks), \
          patch.object(auth, "fetch_cert_bytes", new_callable=AsyncMock) as fetch:
-        client.return_value.get_signing_key_from_jwt.return_value = signing_key
         result = await _validate(_sign(keypair), provider)
 
     assert result is not None
@@ -492,9 +493,12 @@ async def test_a_cached_certificate_is_not_fetched_again(keypair):
     """Cached per provider, not per tenant: a tenant may trust several, and a
     tenant-wide slot would hand one provider's certificate to another."""
     provider = _provider(PublicCertificatePath="https://abc.example/auth0.crt")
+    auth._certificate_cache.set(
+        f"tpprovcert::ABC001::auth0-main::{auth._path_hash('https://abc.example/auth0.crt')}",
+        keypair["cert_pem"],
+        3600,
+    )
     cache = MagicMock()
-    cache.get_bytes_value.return_value = keypair["cert_pem"]
-    cache.add_bytes_value_async = AsyncMock()
 
     store = MagicMock()
     store.get_active = AsyncMock(return_value=[provider])
@@ -506,14 +510,15 @@ async def test_a_cached_certificate_is_not_fetched_again(keypair):
 
     assert result is not None
     fetch.assert_not_awaited()
-    cache.get_bytes_value.assert_called_once_with("tpprovcert::ABC001::auth0-main")
+    cache.get_bytes_value.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_a_freshly_fetched_certificate_is_cached_for_an_hour(keypair):
+async def test_a_freshly_fetched_certificate_is_cached_for_an_hour(keypair, monkeypatch):
+    now = 1000.0
+    monkeypatch.setattr(auth, "_certificate_cache", auth._CertificateCache(lambda: now))
     provider = _provider(PublicCertificatePath="https://abc.example/auth0.crt")
     cache = MagicMock()
-    cache.get_bytes_value.return_value = None
     cache.add_bytes_value_async = AsyncMock()
 
     store = MagicMock()
@@ -523,9 +528,11 @@ async def test_a_freshly_fetched_certificate_is_cached_for_an_hour(keypair):
         fetch.return_value = keypair["cert_pem"]
         await auth.validate_with_fallback(_sign(keypair), _tenant(), _request(), cache)
 
-    cache.add_bytes_value_async.assert_awaited_once_with(
-        "tpprovcert::ABC001::auth0-main", keypair["cert_pem"], 3600
-    )
+    assert auth._certificate_cache._entries == {
+        f"tpprovcert::ABC001::auth0-main::{auth._path_hash('https://abc.example/auth0.crt')}":
+            (keypair["cert_pem"], now + 3600),
+    }
+    cache.add_bytes_value_async.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -554,8 +561,10 @@ async def test_a_passphrase_that_will_not_decrypt_refuses_the_token(keypair):
 async def test_an_unreadable_jwks_refuses_the_token(keypair):
     provider = _provider(JwksUrl="https://abc.eu.auth0.com/.well-known/jwks.json")
 
-    with patch.object(auth, "PyJWKClient") as client:
-        client.side_effect = RuntimeError("unreachable")
+    jwks = MagicMock()
+    jwks.get_signing_key = AsyncMock(side_effect=KeyFetchError("connect", "abc.eu.auth0.com"))
+
+    with patch.object(auth, "get_jwks_cache", return_value=jwks):
         assert await _validate(_sign(keypair), provider) is None
 
 
