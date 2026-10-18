@@ -15,7 +15,7 @@ omitted: the flow fails closed rather than minting a token nobody asked for.
 """
 
 import logging
-from typing import Optional, Tuple
+from typing import Optional
 
 from blocks_genesis._auth.blocks_context import BlocksContextManager
 from blocks_genesis._delegation.context import AuthClaimsContext, DelegatedTokenContext
@@ -104,7 +104,19 @@ class DelegationGrantFactory:
         token_version, security_stamp = AuthClaimsContext.version_material()
 
         if not token_version and not security_stamp:
-            token_version, security_stamp = await self._read_from_held_grant(context)
+            held = await self._read_held_user_grant(context)
+            token_version = held.token_version if held else None
+            security_stamp = held.security_stamp if held else None
+            if held is not None and held.is_impersonated:
+                # The message SecurityContext never carries the impersonation session id, so a
+                # chained grant takes the session and root tenant from the held grant in Redis.
+                # Without this the next send wrote a plain user grant for the impersonating user,
+                # and IAM refused it. IAM still checks the session on every redemption.
+                context = context.model_copy(update={
+                    "impersonated": True,
+                    "impersonation_session_id": held.impersonation_session_id,
+                    "original_tenant_id": held.original_tenant_id,
+                })
 
         if not token_version or not security_stamp:
             # A grant without these cannot be redeemed: IAM compares both against the tenant DB.
@@ -122,23 +134,23 @@ class DelegationGrantFactory:
             logger.error("Could not create a delegation grant; the message is sent without one: %s", ex)
             return None
 
-    async def _read_from_held_grant(self, context) -> Tuple[Optional[str], Optional[str]]:
+    async def _read_held_user_grant(self, context) -> Optional[DelegationGrantRecord]:
         """In a worker the user and organization on the context came from the message
         SecurityContext. The new grant is written from that context, so it must name the same user
         and organization as the held grant, or a tampered message could redirect the chain.
         """
         record = await self._read_held_grant(context.tenant_id)
         if record is None or record.is_client_grant:
-            return None, None
+            return None
 
         if record.user_id != context.user_id or (record.organization_id or "") != (context.organization_id or ""):
             logger.warning(
                 "The held delegation grant names a different user or organization than the current "
                 "context; not chaining it."
             )
-            return None, None
+            return None
 
-        return record.token_version, record.security_stamp
+        return record
 
     async def _read_held_grant(self, tenant_id: str) -> Optional[DelegationGrantRecord]:
         held_grant_id = DelegatedTokenContext.current()

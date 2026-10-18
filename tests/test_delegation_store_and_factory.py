@@ -274,6 +274,50 @@ async def test_factory_chains_from_the_held_grant_for_worker_originated_sends():
     assert payload["SecurityStamp"] == "stamp-5"
 
 
+async def test_factory_keeps_the_held_grants_impersonation_when_chaining():
+    # The message SecurityContext never carries the impersonation session id. The chained grant
+    # must still name it, or IAM treats it as a plain user grant in the target tenant.
+    cache = FakeCache()
+    store = DelegationGrantStore(cache)
+
+    held = await store.create_async(impersonating_context(), "5", "stamp-5")
+
+    # As a worker rebuilds the context from the message: impersonated, but no session id, and a
+    # root tenant the chained grant must not take on trust.
+    BlocksContextManager.set_context(
+        impersonating_context(root_tenant_id="project-tenant", session_id="")
+    )
+    AuthClaimsContext.clear()
+    DelegatedTokenContext.set(held)
+
+    chained = await DelegationGrantFactory(store).create_for_send_async()
+
+    assert chained is not None and chained != held
+    payload = json.loads(cache.values[constants.grant_key(chained)])
+    assert payload["ImpersonationSessionId"] == "session-1"
+    assert payload["OriginalTenantId"] == "console-tenant"
+    assert payload["TenantId"] == "project-tenant"
+    assert payload["UserId"] == "user-1"
+    assert payload["TokenVersion"] == "5"
+
+
+async def test_factory_chains_a_plain_grant_when_the_held_grant_is_not_impersonated():
+    cache = FakeCache()
+    store = DelegationGrantStore(cache)
+
+    held = await store.create_async(authenticated_context(), "5", "stamp-5")
+
+    BlocksContextManager.set_context(authenticated_context())
+    AuthClaimsContext.clear()
+    DelegatedTokenContext.set(held)
+
+    chained = await DelegationGrantFactory(store).create_for_send_async()
+
+    payload = json.loads(cache.values[constants.grant_key(chained)])
+    assert payload["ImpersonationSessionId"] == ""
+    assert payload["OriginalTenantId"] == ""
+
+
 async def test_factory_does_not_chain_a_grant_from_another_tenant():
     cache = FakeCache()
     store = DelegationGrantStore(cache)
