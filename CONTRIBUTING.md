@@ -12,6 +12,7 @@ Thank you for your interest in contributing to **blocks-genesis-py**! Your contr
   - [Submitting Pull Requests](#submitting-pull-requests)
 - [Development Setup](#development-setup)
 - [Branching Strategy](#branching-strategy)
+- [Releasing](#releasing)
 - [Git Guidelines](#git-guidelines)
 - [Coding Guidelines](#coding-guidelines)
 - [Testing](#testing)
@@ -96,6 +97,14 @@ This repository uses a two-branch model:
 - `inception`: The active development branch. Day-to-day work is committed here.
 
 Work lands on `inception`, and pull requests are opened from `inception` into `main`. External contributors should fork the repository, branch from `inception`, and target `inception` with their pull requests.
+
+## Releasing
+
+Every service installs this package from PyPI, so a release must carry everything already on `main`.
+
+- Tag only a commit that contains `main` (`git merge-base --is-ancestor origin/main <commit>` succeeds).
+- Name the tag `v<version>`, matching `version` in `pyproject.toml`.
+- Publish only by creating a GitHub release from that tag. `.github/workflows/release.yml` builds and uploads it, and refuses a tag that lacks `main` or does not match the package version. Do not upload by hand.
 
 ## Git Guidelines
 

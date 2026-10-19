@@ -1,3 +1,4 @@
+import threading
 import pytest
 from queue import Queue
 from unittest.mock import MagicMock, patch
@@ -14,6 +15,9 @@ def _bl(batch_size=1):
     b.flush_interval_sec = 0.01
     b.collection = MagicMock()
     b.queue = Queue()
+    b._dropped = 0
+    b._dropped_lock = threading.Lock()
+    b._last_drop_report = float("-inf")
     return b
 
 
@@ -43,7 +47,7 @@ def test_create_collection_exists_not_ts():
     b._collection_exists = MagicMock(return_value=True)
     b._is_time_series_collection = MagicMock(return_value=False)
     b._create_collection_if_not_exists(db, 'c')
-    db.drop_collection.assert_called()
+    db.drop_collection.assert_not_called()
 
 
 def test_create_collection_exists_ts():
@@ -112,7 +116,7 @@ def test_enqueue():
     r = MagicMock(); r.levelname = 'INFO'; r.getMessage.return_value = 'm'
     r.TenantId = 'tid'; r.name = 'n'; r.TraceId = 't'; r.SpanId = 's'
     b.enqueue(r)
-    b.queue.put.assert_called()
+    b.queue.put_nowait.assert_called()
 
 
 def test_enqueue_fallbacks():
@@ -122,7 +126,7 @@ def test_enqueue_fallbacks():
         r = MagicMock(); r.levelname = 'INFO'; r.getMessage.return_value = 'm'
         r.TenantId = None; r.name = 'n'; r.TraceId = None; r.SpanId = None
         b.enqueue(r)
-        b.queue.put.assert_called()
+        b.queue.put_nowait.assert_called()
 
 
 def test_worker_insert():
@@ -144,6 +148,7 @@ def test_worker_insert_exception():
     b.collection.insert_many.side_effect = Exception('x')
     b._stop_event = MagicMock(); b._stop_event.is_set.side_effect = [False, False, True]
     b._background_worker()
+    assert b.collection.insert_many.call_count == 2
 
 
 def test_worker_shutdown_flush():
@@ -158,6 +163,7 @@ def test_worker_shutdown_flush_exception():
     b.collection.insert_many.side_effect = Exception('x')
     b._stop_event = MagicMock(); b._stop_event.is_set.side_effect = [False, False, True]
     b._background_worker()
+    assert b.collection.insert_many.call_count == 2
 
 
 def test_stop():
