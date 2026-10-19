@@ -37,6 +37,7 @@ class TenantService:
         self.database = self.client[self._blocks_secret.RootDatabaseName]
 
         self._tenant_cache: Dict[str, Tenant] = {}
+        self._root_tenant_id: Optional[str] = None
         self._tenant_load_in_progress: Dict[str, asyncio.Task] = {}
         self._update_channel = "tenant::updates"
         self._collection_name = "Tenants"
@@ -54,6 +55,7 @@ class TenantService:
                 return
 
             asyncio.create_task(self._subscribe_to_updates())
+            await self._load_root_tenant_id()
             self._initialized = True
             _logger.info("TenantService initialized successfully")
 
@@ -113,17 +115,26 @@ class TenantService:
         normalized = normalize_domain(domain)
         domains = [f"http://{normalized}", f"https://{normalized}"]
 
-        # Check in-memory cache first
+        # Check in-memory cache first. A tenant that verified the domain wins over one that only claims it.
+        matches = []
         for tenant in self._tenant_cache.values():
-            if tenant.applications and any(
-                app.domain and normalize_domain(app.domain) == normalized
-                for app in tenant.applications
-            ):
-                return tenant
+            apps = [
+                app for app in (tenant.applications or [])
+                if app.domain and normalize_domain(app.domain) == normalized
+            ]
+            if apps:
+                matches.append((tenant, any(app.is_domain_verified for app in apps)))
+        if matches:
+            return next((t for t, verified in matches if verified), matches[0][0])
 
-        # Query database if not found in cache
+        # Query database if not found in cache, verified owner first
         try:
-            tenant_dict = await self.database[self._collection_name].find_one({
+            collection = self.database[self._collection_name]
+            tenant_dict = await collection.find_one({
+                "Applications": {
+                    "$elemMatch": {"Domain": {"$in": domains}, "IsDomainVerified": True}
+                }
+            }) or await collection.find_one({
                 "Applications": {
                     "$elemMatch": {"Domain": {"$in": domains}}
                 }
@@ -143,15 +154,34 @@ class TenantService:
         return None, None
 
     def get_root_tenant_id(self) -> Optional[str]:
-        """The root tenant's id, from the cache.
+        """The root tenant's id, as loaded from the root database at startup.
 
-        Public so consumers stop scanning the private `_tenant_cache` themselves -- that
-        breaks the moment the cache gains an expiry or evicts a disabled tenant.
+        Falls back to scanning the cache only when that load has not succeeded.
         """
+        if self._root_tenant_id:
+            return self._root_tenant_id
         return next(
             (t.tenant_id for t in self._tenant_cache.values() if t.is_root_tenant),
             None,
         )
+
+    async def get_root_tenant_id_async(self) -> Optional[str]:
+        """The root tenant's id, loading it from the root database if it is not known yet."""
+        if not self._root_tenant_id:
+            await self._load_root_tenant_id()
+        return self._root_tenant_id
+
+    async def _load_root_tenant_id(self) -> None:
+        # Read only from the root database: a tenant update arriving on the pub/sub
+        # channel must never be able to make itself the root tenant.
+        try:
+            tenant_dict = await self.database[self._collection_name].find_one(
+                {"IsRootTenant": True}, sort=[("IsDisabled", 1)]
+            )
+            if tenant_dict:
+                self._root_tenant_id = Tenant(**tenant_dict).tenant_id
+        except Exception as e:
+            _logger.exception(f"Error loading the root tenant: {e}")
 
     def get_tenant_database_connection_strings(self) -> Dict[str, Tuple[str, str]]:
         """
@@ -165,16 +195,19 @@ class TenantService:
             for tenant_id, tenant in self._tenant_cache.items()
         }
 
+    async def _find_tenant(self, tenant_id: str) -> Optional[Tenant]:
+        """The tenant's record in the root database, or None. Raises if the read fails."""
+        tenant_dict = await self.database[self._collection_name].find_one({
+            "$or": [
+                {"_id": tenant_id},
+                {"TenantId": tenant_id}
+            ]
+        })
+        return Tenant(**tenant_dict) if tenant_dict else None
+
     async def _load_tenant_from_db(self, tenant_id: str) -> Optional[Tenant]:
         try:
-            tenant_dict = await self.database[self._collection_name].find_one({
-                "$or": [
-                    {"_id": tenant_id},
-                    {"TenantId": tenant_id}
-                ]
-            })
-            if tenant_dict:
-                return Tenant(**tenant_dict)
+            return await self._find_tenant(tenant_id)
         except Exception as e:
             _logger.exception(f"Error loading tenant {tenant_id}: {e}")
         return None
@@ -246,25 +279,38 @@ class TenantService:
 
     async def _apply_update_message(self, update: TenantCacheUpdateMessage) -> None:
         action = (update.action or "").strip().lower()
-        tenant = update.tenant
-        tenant_id = update.tenant_id
+        tenant_id = self._resolve_tenant_id(update)
+        if not tenant_id:
+            return
 
         if action == self.TENANT_CACHE_UPDATE_ACTION_REMOVE:
-            if isinstance(tenant_id, str) and tenant_id:
-                self._tenant_cache.pop(tenant_id, None)
-                _logger.info(f"Tenant {tenant_id} removed from cache")
+            self._tenant_cache.pop(tenant_id, None)
+            _logger.info("Tenant %r removed from cache", tenant_id[:64])
             return
 
-        if tenant is None or not tenant.tenant_id:
+        # The message only names the tenant. Anyone who can publish on this channel
+        # could otherwise set its connection string, root flag, certificate or salt,
+        # so the root database is re-read and the message's own fields are ignored.
+        try:
+            tenant = await self._find_tenant(tenant_id)
+        except Exception as e:
+            # Keep serving the copy we have rather than dropping a working tenant
+            # because the database is briefly unreachable.
+            _logger.warning(
+                "Tenant %r could not be re-read (%s); keeping the cached copy",
+                tenant_id[:64], type(e).__name__,
+            )
             return
 
-        if tenant.is_disabled:
-            self._tenant_cache.pop(tenant.tenant_id, None)
-            _logger.info(f"Disabled tenant {tenant.tenant_id} removed from cache")
+        if tenant is None or tenant.is_disabled:
+            self._tenant_cache.pop(tenant_id, None)
+            if tenant is not None:
+                self._tenant_cache.pop(tenant.tenant_id, None)
+            _logger.info("Tenant %r removed from cache (missing or disabled)", tenant_id[:64])
             return
 
         self._tenant_cache[tenant.tenant_id] = tenant
-        _logger.info(f"Tenant {tenant.tenant_id} upserted in cache")
+        _logger.info("Tenant %r refreshed from the database", tenant_id[:64])
 
     async def _subscribe_to_updates(self):
         if self._is_subscribed:

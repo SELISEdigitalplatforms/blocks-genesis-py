@@ -9,9 +9,13 @@ from blocks_genesis._auth.blocks_context import BlocksContextManager
 from blocks_genesis._cache.CacheClient import CacheClient
 from blocks_genesis._core.secret_loader import get_blocks_secret
 from blocks_genesis._lmt.activity import Activity
+from blocks_genesis._lmt.redaction import redact_cache_key
+import logging
 
 
 _CHANNEL_EMPTY_ERROR = "Channel cannot be empty"
+
+_logger = logging.getLogger(__name__)
 
 
 class RedisClient(CacheClient):
@@ -21,6 +25,8 @@ class RedisClient(CacheClient):
         """Initialize Redis client"""
         self._blocks_secret = get_blocks_secret()
         self._connection_string = self._blocks_secret.CacheConnectionString
+        if not self._connection_string or not self._connection_string.strip():
+            raise ValueError("CacheConnectionString is not configured")
         self._subscriptions: Dict[str, Callable] = {}
         self._disposed = False
         self._pubsub_tasks: Dict[str, asyncio.Task] = {}
@@ -85,7 +91,7 @@ class RedisClient(CacheClient):
     def _create_activity(self, key: str, operation: str) -> Activity:
         """Create activity for tracing"""
         activity = Activity.start(f"Redis::{operation}")
-        activity.set_property("key", key)
+        activity.set_property("key", redact_cache_key(key))
         activity.set_property("operation", operation)
         activity.set_property("baggage.TenantId", BlocksContextManager.get_context().tenant_id if BlocksContextManager.get_context() else "miscellaneous")
         return activity
@@ -152,7 +158,7 @@ class RedisClient(CacheClient):
 
     def add_bytes_value(self, key: str, value: bytes, key_life_span: Optional[int] = None) -> bool:
         """Add byte value to cache"""
-        print(f"Adding byte value to cache: {key} with length {len(value)} and TTL {key_life_span}")
+        _logger.debug("Adding byte value to cache (%d bytes, TTL %s)", len(value), key_life_span)
         with self._create_activity(key, "AddBytesValue") as activity:
             try:
                 activity.set_property("value_length", len(value))
@@ -172,7 +178,7 @@ class RedisClient(CacheClient):
                 raise
 
     def get_bytes_value(self, key: str) -> Optional[bytes]:
-        print(f"Getting byte value from cache: {key}")
+        _logger.debug("Getting byte value from cache")
         """Get byte value from cache"""
         with self._create_activity(key, "GetBytesValue") as activity:
             try:
