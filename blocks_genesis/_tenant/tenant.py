@@ -23,8 +23,8 @@ class JwtTokenParameters(BaseModel):
     subject: Optional[str] = Field(alias="Subject", default="")
     audiences: List[str] = Field(default_factory=list, alias="Audiences")
     public_certificate_path: Optional[str] = Field(alias="PublicCertificatePath", default="")
-    public_certificate_password: Optional[str] = Field(alias="PublicCertificatePassword", default="")
-    private_certificate_password: Optional[str] = Field(alias="PrivateCertificatePassword", default="")
+    public_certificate_password: Optional[str] = Field(alias="PublicCertificatePassword", default="", repr=False)
+    private_certificate_password: Optional[str] = Field(alias="PrivateCertificatePassword", default="", repr=False)
     certificate_storage_type: CertificateStorageType = Field(
         alias="CertificateStorageType",
         default=CertificateStorageType.AZURE
@@ -38,6 +38,7 @@ class JwtTokenParameters(BaseModel):
     class Config:
         extra = "ignore"
         validate_by_name = True
+        hide_input_in_errors = True
         use_enum_values = True
 
 
@@ -51,12 +52,13 @@ class ThirdPartyJwtTokenParameters(BaseModel):
     audiences: List[str] = Field(alias="Audiences", default_factory=list)
     public_certificate_path: str = Field(alias="PublicCertificatePath", default="")
     jwks_url: str = Field(alias="JwksUrl", default="")
-    public_certificate_password: str = Field(alias="PublicCertificatePassword", default="")
+    public_certificate_password: str = Field(alias="PublicCertificatePassword", default="", repr=False)
     cookie_key: str = Field(alias="CookieKey", default="")
 
     class Config:
         extra = "ignore"
         validate_by_name = True
+        hide_input_in_errors = True
 
 class Application(BaseModel):
     domain: Optional[str] = Field(alias="Domain", default="")
@@ -77,8 +79,8 @@ class Tenant(BaseEntity):
     applications: List[Application] = Field(alias="Applications", default_factory=list)
 
     is_disabled: bool = Field(alias="IsDisabled", default=False)
-    db_connection_string: str = Field(alias="DbConnectionString", default="")
-    tenant_salt: str = Field(alias="TenantSalt", default="")
+    db_connection_string: str = Field(alias="DbConnectionString", default="", repr=False)
+    tenant_salt: str = Field(alias="TenantSalt", default="", repr=False)
 
     jwt_token_parameters: Optional[JwtTokenParameters] = Field(alias="JwtTokenParameters", default=None)
     third_party_jwt_token_parameters: Optional[ThirdPartyJwtTokenParameters] = Field(
@@ -99,3 +101,4 @@ class Tenant(BaseEntity):
     class Config:
         extra = "ignore"
         validate_by_name = True
+        hide_input_in_errors = True

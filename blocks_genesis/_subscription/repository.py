@@ -1,6 +1,10 @@
 """Reads the subscription read models: SubscriptionUsageCurrent (a balance per meter) and
 SubscriptionEntitlementsCurrent (what the plan behind those balances grants).
+
+The collections are synchronous PyMongo, so each read, cursor walk included, runs on a
+worker thread. On the event loop it would stall every request while the database answers.
 """
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
@@ -12,6 +16,15 @@ logger = logging.getLogger(__name__)
 
 _USAGE_CURRENT = "SubscriptionUsageCurrent"
 _ENTITLEMENTS_CURRENT = "SubscriptionEntitlementsCurrent"
+# Latest period first, a best-effort stand-in for "newest subscription first". During a
+# plan change the old and new subscriptions are both live, and a reader taking the first
+# row per meter should get the current plan's, not whichever Mongo returns first. This is
+# right when the old subscription ends at the change: the new one opened the later period.
+# It is not right when the old subscription renews during the overlap -- its new period
+# starts later and sorts first. A true newest-subscription order needs a subscription start
+# field on the usage read model (blocks-utilities); that is a follow-up. _id breaks a tie so
+# the order never depends on storage.
+_NEWEST_FIRST = [("PeriodStartUtc", -1), ("_id", -1)]
 
 def _live_status(now: datetime) -> Dict[str, Any]:
     """Active rows, plus trialing rows whose trial has not ended.
@@ -51,15 +64,15 @@ async def get_current_usage_docs(
     """
     collection = await _collection(_USAGE_CURRENT, tenant_id)
     now = datetime.now(timezone.utc)
-    cursor = collection.find({
+    query = {
         "TenantId": tenant_id,
         "OrganizationId": organization_id,
         "UserId": user_id if user_id else {"$in": [None, ""]},
         **_live_status(now),
         "PeriodStartUtc": {"$lte": now},
         "PeriodEndUtc": {"$gt": now},
-    })
-    return list(cursor)
+    }
+    return await asyncio.to_thread(lambda: list(collection.find(query, sort=_NEWEST_FIRST)))
 
 
 async def get_scoped_usage_docs(
@@ -84,15 +97,15 @@ async def get_scoped_usage_docs(
     owners.extend(u for u in user_ids if u)
     if not owners:
         return []
-    cursor = collection.find({
+    query = {
         "TenantId": tenant_id,
         "OrganizationId": organization_id,
         "UserId": {"$in": owners},
         **_live_status(now),
         "PeriodStartUtc": {"$lte": now},
         "PeriodEndUtc": {"$gt": now},
-    })
-    return list(cursor)
+    }
+    return await asyncio.to_thread(lambda: list(collection.find(query, sort=_NEWEST_FIRST)))
 
 
 async def get_current_entitlement_docs(
@@ -105,9 +118,11 @@ async def get_current_entitlement_docs(
     but a plan change publishes the new one before the old is retired.
     """
     collection = await _collection(_ENTITLEMENTS_CURRENT, tenant_id)
-    cursor = collection.find({
+    query = {
         "TenantId": tenant_id,
         "OrganizationId": organization_id,
         **_live_status(datetime.now(timezone.utc)),
-    }).sort("SubscriptionVersion", -1)
-    return list(cursor)
+    }
+    return await asyncio.to_thread(
+        lambda: list(collection.find(query).sort("SubscriptionVersion", -1))
+    )

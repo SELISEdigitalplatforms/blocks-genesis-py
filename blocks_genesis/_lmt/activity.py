@@ -27,19 +27,10 @@ class Activity:
         self._token = attach(self._span_context)
         
     def _find_root_attributes(self, span: Optional[Span]) -> Dict[str, object]:
-        """Find root attributes in the span or its parent."""
+        """The parent's baggage attributes only; other attributes (URLs with query strings) are not carried over."""
         if span is None or not hasattr(span, 'attributes'):
             return {}
-
-        root_attrs = {}
-        for k, v in span.attributes.items():
-            if k.startswith("baggage."):
-                root_attrs[k[8:]] = v
-
-        if root_attrs:
-            return root_attrs
-
-        return dict(span.attributes)
+        return {k[8:]: v for k, v in span.attributes.items() if k.startswith("baggage.")}
 
     def get_root_attribute(self, key: str) -> Optional[object]:
         """Get a single attribute from the root span attributes."""

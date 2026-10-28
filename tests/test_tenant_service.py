@@ -27,7 +27,7 @@ async def test_initialize(mock_motor, mock_get_secret, mock_cache_provider):
     assert service._initialized is True
 
 @pytest.mark.asyncio
-@patch('blocks_genesis._tenant.tenant_service.TenantService._load_tenant_from_db', new_callable=AsyncMock)
+@patch('blocks_genesis._tenant.tenant_service.TenantService._find_tenant', new_callable=AsyncMock)
 @patch('blocks_genesis._tenant.tenant_service.get_blocks_secret')
 @patch('blocks_genesis._tenant.tenant_service.CacheProvider')
 @patch('blocks_genesis._tenant.tenant_service.AsyncIOMotorClient')
@@ -37,7 +37,7 @@ async def test_get_tenant(mock_motor, mock_cache_provider, mock_get_secret, mock
     mock_cache_provider.get_client.return_value = MagicMock()
     service = tenant_service.TenantService()
     # Not found in cache, triggers db load
-    mock_load_tenant.return_value = MagicMock(tenant_id='tid')
+    mock_load_tenant.return_value = MagicMock(tenant_id='tid', is_disabled=False)
     tenant = await service.get_tenant('tid')
     assert tenant is not None
     # Found in cache
@@ -51,12 +51,15 @@ async def test_get_tenant_deduplicates_concurrent_loads():
     service._tenant_cache = {}
     service._tenant_load_in_progress = {}
     service._tenant_load_lock = asyncio.Lock()
+    service._tenant_loaded_at = {}
+    service._unknown_tenants = {}
+    service._unknown_domains = {}
 
     async def load_once(_tenant_id):
         await asyncio.sleep(0.01)
-        return MagicMock(tenant_id='tid')
+        return MagicMock(tenant_id='tid', is_disabled=False)
 
-    service._load_tenant_from_db = AsyncMock(side_effect=load_once)
+    service._find_tenant = AsyncMock(side_effect=load_once)
 
     tenant1, tenant2 = await asyncio.gather(
         service.get_tenant('tid'),
@@ -65,7 +68,7 @@ async def test_get_tenant_deduplicates_concurrent_loads():
 
     assert tenant1 is not None
     assert tenant2 is not None
-    service._load_tenant_from_db.assert_awaited_once_with('tid')
+    service._find_tenant.assert_awaited_once_with('tid')
 
 @pytest.mark.asyncio
 @patch('blocks_genesis._tenant.tenant_service.get_blocks_secret')
@@ -93,7 +96,7 @@ async def test_get_db_connection(mock_get_tenant):
     assert conn == 'conn'
 
 @pytest.mark.asyncio
-def test__load_tenant_from_db():
+def test__find_tenant():
     service = tenant_service.TenantService.__new__(tenant_service.TenantService)
     mock_db = MagicMock()
     mock_db.__getitem__.return_value.find_one = AsyncMock(return_value={'_id': 'tid', 'TenantId': 'tid', 'JwtTokenParameters': {}})
@@ -101,7 +104,7 @@ def test__load_tenant_from_db():
     service._collection_name = 'Tenants'
     import asyncio
     async def run():
-        tenant = await service._load_tenant_from_db('tid')
+        tenant = await service._find_tenant('tid')
         assert tenant is not None
     asyncio.run(run())
 
