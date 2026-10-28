@@ -30,6 +30,9 @@ def _svc():
     s.database = MagicMock()
     s._tenant_cache = {}
     s._tenant_load_in_progress = {}
+    s._tenant_loaded_at = {}
+    s._unknown_tenants = {}
+    s._unknown_domains = {}
     s._update_channel = "tenant::updates"
     s._collection_name = "Tenants"
     s._initialized = False
@@ -68,6 +71,10 @@ def _assert_no_secret(text):
 
 async def test_a_tenant_update_logs_no_secret_and_still_applies(caplog):
     svc = _svc()
+    # The update re-reads the tenant from the root database; the message body is ignored.
+    collection = MagicMock()
+    collection.find_one = AsyncMock(return_value=_doc())
+    svc.database = {"Tenants": collection}
     caplog.set_level(logging.DEBUG)
 
     await svc._handle_update(json.dumps({"Action": "upsert", "Tenant": _doc()}))
@@ -103,7 +110,8 @@ async def test_a_bad_tenant_document_from_the_database_logs_no_secret(caplog):
     svc.database = {"Tenants": collection}
     caplog.set_level(logging.DEBUG)
 
-    assert await svc._load_tenant_from_db("t1") is None
+    await svc._handle_update(json.dumps({"Action": "upsert", "TenantId": "t1"}))
+    assert "t1" not in svc._tenant_cache
 
     logged = "\n".join(r.getMessage() + (r.exc_text or "") for r in caplog.records)
     for record in caplog.records:
