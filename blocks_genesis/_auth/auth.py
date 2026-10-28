@@ -49,7 +49,11 @@ from blocks_genesis._subscription.context import SubscriptionUsageContext
 from blocks_genesis._subscription.models import UsageResult, UsageSnapshot
 from blocks_genesis._subscription.usage_service import SubscriptionUsageService
 from blocks_genesis._tenant.tenant import Tenant
-from blocks_genesis._tenant.tenant_service import TenantService
+from blocks_genesis._tenant.tenant_service import (
+    TenantService,
+    get_tenant_service,
+    initialize_tenant_service,
+)
 from blocks_genesis._utilities.crypto_service import CryptoService
 
 _logger = logging.getLogger(__name__)
@@ -192,6 +196,70 @@ def _read_certificate_file(path: str) -> bytes:
 # MAIN AUTHENTICATION HANDLER
 # ============================================================================
 
+def _is_disabled(tenant: Optional[Tenant]) -> bool:
+    return getattr(tenant, "is_disabled", False) is True
+
+
+def _is_impersonated(claims: Dict[str, Any]) -> bool:
+    value = claims.get(BlocksContext.IMPERSONATED_CLAIM)
+    return value is True or (isinstance(value, str) and value.lower() == "true")
+
+
+def _tenant_ids(tenant: Tenant) -> set:
+    """Both forms a tenant is named by: its tenant id and its record id."""
+    return {value for value in (tenant.tenant_id, tenant.id) if value}
+
+
+def _is_tenant_id(value: Any) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
+def _bind_token_tenant(payload: Dict[str, Any], tenant: Tenant, signing_tenant: Tenant) -> str:
+    """Check that a verified Blocks token may act for the request tenant.
+
+    Returns the canonical original tenant id for the context. It comes from the
+    tenant that verified the token, never from the request header.
+
+    Raises HTTPException(401) when the token belongs to a different tenant.
+    """
+    request_ids = _tenant_ids(tenant)
+    signer_ids = _tenant_ids(signing_tenant)
+    claim_tenant_id = payload.get(BlocksContext.TENANT_ID_CLAIM)
+    claim_original_tenant_id = payload.get(BlocksContext.ORIGINAL_TENANT_ID_CLAIM)
+    impersonated = _is_impersonated(payload)
+
+    reason = None
+    if not impersonated:
+        if claim_tenant_id not in (None, "") and not (
+            _is_tenant_id(claim_tenant_id) and claim_tenant_id in request_ids
+        ):
+            reason = "token_tenant_mismatch"
+    elif not _is_tenant_id(claim_tenant_id):
+        reason = "impersonation_target_missing"
+    elif not (_is_tenant_id(claim_original_tenant_id) and claim_original_tenant_id in signer_ids):
+        reason = "impersonation_signer_mismatch"
+    elif not request_ids & signer_ids and claim_tenant_id not in request_ids:
+        # Under impersonation the request may name the signer (genesis-net) or the target.
+        reason = "impersonation_request_tenant_mismatch"
+
+    if reason:
+        security_log(
+            "tenant_binding_refused",
+            "The token does not belong to the request tenant.",
+            detail={
+                "reason": reason,
+                "requestTenantId": tenant.tenant_id,
+                "signerTenantId": signing_tenant.tenant_id,
+                "claimTenantId": claim_tenant_id,
+                "claimOriginalTenantId": claim_original_tenant_id,
+            },
+            is_warning=True,
+        )
+        raise HTTPException(status_code=401, detail="Token validation failed")
+
+    return signing_tenant.tenant_id if impersonated else tenant.tenant_id
+
+
 async def _resolve_signing_tenant(
     token: str,
     tenant: Tenant,
@@ -211,12 +279,30 @@ async def _resolve_signing_tenant(
     except Exception:
         return tenant
 
-    if claims.get("impersonated"):
-        signer_id = claims.get("original_tenant_id")
-        if signer_id and signer_id != tenant_id:
+    if _is_impersonated(claims):
+        signer_id = claims.get(BlocksContext.ORIGINAL_TENANT_ID_CLAIM)
+        # Nothing here is verified yet, so log at info and never more than a short id.
+        if signer_id is not None and not _is_tenant_id(signer_id):
+            security_log(
+                "impersonation_signer_refused",
+                "The impersonation signer id is not a tenant id.",
+                detail={"reason": "malformed"},
+            )
+            raise HTTPException(status_code=401, detail="Token validation failed")
+        if signer_id and signer_id not in _tenant_ids(tenant):
             signer_tenant = await tenant_service.get_tenant(signer_id)
-            if signer_tenant:
-                return signer_tenant
+            # An unknown signer must not fall back to the request tenant's key.
+            if not signer_tenant or _is_disabled(signer_tenant):
+                security_log(
+                    "impersonation_signer_refused",
+                    "The impersonation signer tenant is unknown or disabled.",
+                    detail={
+                        "reason": "disabled" if signer_tenant else "unknown",
+                        "signerTenantId": signer_id[:64],
+                    },
+                )
+                raise HTTPException(status_code=401, detail="Tenant not found")
+            return signer_tenant
 
     return tenant
 
@@ -256,14 +342,14 @@ async def authenticate(
 
     # 3. Load tenant configuration
     tenant = await tenant_service.get_tenant(tenant_id) if tenant_id else None
-    if not tenant:
+    if not tenant or _is_disabled(tenant):
         raise HTTPException(status_code=401, detail="Tenant not found")
 
     # Store tenant in request state for later use
     request.state._blocks_tenant = tenant
 
     # 4. Validate token based on source (primary or fallback, impersonation-aware)
-    payload, provider = await _validate_authenticated_token(
+    payload, provider, signing_tenant = await _validate_authenticated_token(
         token, is_third_party, tenant, tenant_id, cache_client, request, tenant_service
     )
 
@@ -316,11 +402,14 @@ async def authenticate(
             },
         )
     else:
+        original_tenant_id = _bind_token_tenant(payload, tenant, signing_tenant)
         blocks_context = BlocksContextManager.create_from_jwt_claims(
             payload,
-            tenant_id,
+            original_tenant_id,
             application_domain=application_domain or ""
         )
+        # The same predicate as the binding, so the two never disagree on odd values.
+        blocks_context.impersonated = _is_impersonated(payload)
 
     BlocksContextManager.set_context(blocks_context)
 
@@ -352,13 +441,15 @@ async def _validate_authenticated_token(
     cache_client: CacheClient,
     request: Request,
     tenant_service: TenantService,
-) -> Tuple[Dict[str, Any], Optional[ThirdPartyJwtProvider]]:
+) -> Tuple[Dict[str, Any], Optional[ThirdPartyJwtProvider], Optional[Tenant]]:
     """Validate the token against the correct signer.
 
-    Returns the JWT payload and the external provider that accepted it, or None for a
-    Blocks token. The caller needs the provider: an external payload must be washed
+    Returns the JWT payload, the external provider that accepted it (None for a Blocks
+    token), and the tenant whose key verified a Blocks token (None for an external
+    one). The caller needs the provider: an external payload must be washed
     before anything reads it, and the provider carries the claim mapping and the
-    organization scope that replace what was washed away.
+    organization scope that replace what was washed away. It needs the signer to bind
+    the token's tenant to the request tenant.
 
     Raises HTTPException when validation fails.
     """
@@ -368,7 +459,7 @@ async def _validate_authenticated_token(
         result = await validate_with_fallback(token, tenant, request, cache_client)
         if result is None:
             raise HTTPException(status_code=401, detail="Token validation failed")
-        return result.claims, result.provider
+        return result.claims, result.provider, None
 
     # A tenant that has opted in routes on the token's own issuer: one minted by a
     # configured provider is validated here, and anything else -- a Blocks token above
@@ -376,7 +467,7 @@ async def _validate_authenticated_token(
     if getattr(tenant, "is_third_party_jwt_enabled", False):
         result = await validate_with_fallback(token, tenant, request, cache_client)
         if result is not None:
-            return result.claims, result.provider
+            return result.claims, result.provider, None
         # Not ours, or ours and broken. Either way primary validation gets its turn, so
         # a provider token caught mid key-rotation is not locked out by one failure.
 
@@ -389,7 +480,7 @@ async def _validate_authenticated_token(
     signing_tenant = await _resolve_signing_tenant(token, tenant, tenant_id, tenant_service)
 
     try:
-        return await validate_jwt_token(token, signing_tenant, cache_client, request), None
+        return await validate_jwt_token(token, signing_tenant, cache_client, request), None, signing_tenant
     except (InvalidTokenError, InvalidKeyError) as err:
         # PyJWT's own error, not an HTTPException. Letting it escape turned a bad
         # signature into a 500, and -- before the opt-in routing above -- stopped a
@@ -1485,6 +1576,15 @@ async def _check_permission(
         return False
 
 
+async def _get_process_tenant_service() -> TenantService:
+    """Return the process-wide tenant service, creating it once if startup skipped it."""
+    try:
+        return get_tenant_service()
+    except RuntimeError:
+        _logger.warning("Tenant service was not initialized at startup; initializing it now")
+        return await initialize_tenant_service()
+
+
 def authorize(resource_name: str = None, bypass_authorization: bool = False):
     """
     FastAPI dependency for authorization with mandatory resource protection.
@@ -1505,7 +1605,7 @@ def authorize(resource_name: str = None, bypass_authorization: bool = False):
         raise ValueError("resource_name is required for protected endpoint authorization")
     
     async def dependency(request: Request):
-        tenant_service = TenantService()
+        tenant_service = await _get_process_tenant_service()
         cache_client = CacheProvider.get_client()
         db_context = DbContext.get_provider()
 

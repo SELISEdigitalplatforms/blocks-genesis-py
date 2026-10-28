@@ -1,3 +1,6 @@
+import itertools
+import logging
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from blocks_genesis._cache.redis_client import RedisClient
@@ -426,6 +429,18 @@ async def test_unsubscribe_error():
 
 # ---------------- _handle_subscription ----------------
 
+def _pubsub(listen):
+    pubsub = MagicMock()
+    pubsub.listen = MagicMock(side_effect=lambda: listen())
+    pubsub.subscribe = AsyncMock()
+    pubsub.unsubscribe = AsyncMock(); pubsub.close = AsyncMock()
+    return pubsub
+
+
+def _errors(caplog):
+    return [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
 @pytest.mark.asyncio
 async def test_handle_subscription_messages():
     c, _ = _client()
@@ -434,9 +449,8 @@ async def test_handle_subscription_messages():
         yield {'type': 'subscribe', 'channel': b'ch', 'data': 1}
         yield {'type': 'message', 'channel': b'ch', 'data': b'hello'}
         yield {'type': 'message', 'channel': 'ch2', 'data': 'world'}
-    pubsub = MagicMock()
-    pubsub.listen = MagicMock(return_value=listen())
-    pubsub.unsubscribe = AsyncMock(); pubsub.close = AsyncMock()
+        c._disposed = True
+    pubsub = _pubsub(listen)
     await c._handle_subscription(pubsub, 'ch', handler)
     assert handler.call_count == 2
     handler.assert_any_call('ch', 'hello')
@@ -446,47 +460,164 @@ async def test_handle_subscription_messages():
 
 
 @pytest.mark.asyncio
-async def test_handle_subscription_handler_error():
+async def test_handle_subscription_handler_error(caplog):
     c, _ = _client()
-    c._logger = MagicMock()
-    handler = MagicMock(side_effect=Exception('bad'))
+    handler = MagicMock(side_effect=[Exception('bad'), None])
     async def listen():
         yield {'type': 'message', 'channel': b'ch', 'data': b'x'}
-    pubsub = MagicMock()
-    pubsub.listen = MagicMock(return_value=listen())
-    pubsub.unsubscribe = AsyncMock(); pubsub.close = AsyncMock()
-    await c._handle_subscription(pubsub, 'ch', handler)
-    assert c._logger.error.called
+        yield {'type': 'message', 'channel': b'ch', 'data': b'y'}
+        c._disposed = True
+    pubsub = _pubsub(listen)
+    with caplog.at_level(logging.ERROR, logger=RC[:-1]):
+        await c._handle_subscription(pubsub, 'ch', handler)
+    assert handler.call_count == 2
+    assert _errors(caplog)
     pubsub.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_handle_subscription_cancelled():
     c, _ = _client()
-    c._logger = MagicMock()
+    c._get_async_client = AsyncMock()
     async def listen():
         raise __import__('asyncio').CancelledError()
         yield
-    pubsub = MagicMock()
-    pubsub.listen = MagicMock(return_value=listen())
-    pubsub.unsubscribe = AsyncMock(); pubsub.close = AsyncMock()
+    pubsub = _pubsub(listen)
     await c._handle_subscription(pubsub, 'ch', MagicMock())
     pubsub.unsubscribe.assert_awaited_once_with('ch')
+    pubsub.close.assert_awaited_once()
+    c._get_async_client.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_handle_subscription_outer_error():
+async def test_handle_subscription_outer_error_when_disposed(caplog):
     c, _ = _client()
-    c._logger = MagicMock()
+    c._get_async_client = AsyncMock()
     async def listen():
+        c._disposed = True
         raise RuntimeError('boom')
         yield
-    pubsub = MagicMock()
-    pubsub.listen = MagicMock(return_value=listen())
-    pubsub.unsubscribe = AsyncMock(); pubsub.close = AsyncMock()
-    await c._handle_subscription(pubsub, 'ch', MagicMock())
-    assert c._logger.error.called
+    pubsub = _pubsub(listen)
+    with caplog.at_level(logging.ERROR, logger=RC[:-1]):
+        await c._handle_subscription(pubsub, 'ch', MagicMock())
+    assert _errors(caplog)
     pubsub.close.assert_awaited_once()
+    c._get_async_client.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handle_subscription_resubscribes_after_connection_error(caplog):
+    c, _ = _client()
+    c._resubscribe_delays = (0,)
+    handler = MagicMock()
+    async def broken():
+        raise ConnectionError('lost')
+        yield
+    async def fresh():
+        yield {'type': 'message', 'channel': b'ch', 'data': b'after'}
+        c._disposed = True
+    old, new = _pubsub(broken), _pubsub(fresh)
+    client = MagicMock(); client.pubsub = MagicMock(return_value=new)
+    c._get_async_client = AsyncMock(return_value=client)
+    with caplog.at_level(logging.ERROR, logger=RC[:-1]):
+        await c._handle_subscription(old, 'ch', handler)
+    handler.assert_called_once_with('ch', 'after')
+    assert _errors(caplog)
+    old.unsubscribe.assert_awaited_once_with('ch')
+    old.close.assert_awaited_once()
+    new.subscribe.assert_awaited_once_with('ch')
+    new.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_subscription_backs_off_and_retries_resubscribe():
+    c, _ = _client()
+    c._resubscribe_delays = (1, 5)
+    handler = MagicMock()
+    async def broken():
+        raise ConnectionError('lost')
+        yield
+    async def ended():
+        return
+        yield
+    async def last():
+        yield {'type': 'message', 'channel': b'ch', 'data': b'z'}
+        c._disposed = True
+    first, failed, second, third = _pubsub(broken), _pubsub(broken), _pubsub(ended), _pubsub(last)
+    failed.subscribe = AsyncMock(side_effect=ConnectionError('still down'))
+    client = MagicMock(); client.pubsub = MagicMock(side_effect=[failed, second, third])
+    c._get_async_client = AsyncMock(side_effect=[ConnectionError('no client'), client, client, client])
+    with patch(RC + 'asyncio.sleep', new_callable=AsyncMock) as sleep:
+        await c._handle_subscription(first, 'ch', handler)
+    # The last delay repeats, and a listen that ended at once does not reset the backoff.
+    assert [call.args[0] for call in sleep.await_args_list] == [1, 5, 5, 5]
+    handler.assert_called_once_with('ch', 'z')
+    failed.close.assert_awaited_once()
+    second.close.assert_awaited_once()
+    third.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_subscription_backoff_grows_when_listen_fails_immediately():
+    c, _ = _client()
+    async def broken():
+        raise ConnectionError('dropped')
+        yield
+    async def last():
+        c._disposed = True
+        return
+        yield
+    pubsubs = [_pubsub(broken) for _ in range(5)] + [_pubsub(last)]
+    client = MagicMock(); client.pubsub = MagicMock(side_effect=pubsubs)
+    c._get_async_client = AsyncMock(return_value=client)
+    with patch(RC + 'asyncio.sleep', new_callable=AsyncMock) as sleep:
+        await c._handle_subscription(_pubsub(broken), 'ch', MagicMock())
+    assert [call.args[0] for call in sleep.await_args_list] == [1, 2, 5, 10, 30, 30]
+    for pubsub in pubsubs:
+        pubsub.subscribe.assert_awaited_once_with('ch')
+
+
+@pytest.mark.asyncio
+async def test_handle_subscription_backoff_resets_after_a_long_listen():
+    c, _ = _client()
+    c._resubscribe_delays = (1, 5)
+    async def broken():
+        raise ConnectionError('lost')
+        yield
+    async def last():
+        c._disposed = True
+        return
+        yield
+    second, third = _pubsub(broken), _pubsub(last)
+    client = MagicMock(); client.pubsub = MagicMock(side_effect=[second, third])
+    c._get_async_client = AsyncMock(side_effect=[ConnectionError('no client'), client, client])
+    # start 0, first failure 0, resubscribed 100, second failure 105 (lasted the longest delay)
+    clock = MagicMock(); clock.monotonic = MagicMock(side_effect=itertools.chain([0, 0, 100, 105], itertools.repeat(200)))
+    with patch(RC + 'asyncio.sleep', new_callable=AsyncMock) as sleep,          patch(RC + 'time', clock):
+        await c._handle_subscription(_pubsub(broken), 'ch', MagicMock())
+    assert [call.args[0] for call in sleep.await_args_list] == [1, 5, 1]
+
+
+@pytest.mark.asyncio
+async def test_handle_subscription_stops_when_disposed_during_backoff():
+    c, _ = _client()
+    c._get_async_client = AsyncMock()
+    async def broken():
+        raise ConnectionError('lost')
+        yield
+    pubsub = _pubsub(broken)
+    async def dispose(_delay):
+        c._disposed = True
+    with patch(RC + 'asyncio.sleep', new=AsyncMock(side_effect=dispose)):
+        await c._handle_subscription(pubsub, 'ch', MagicMock())
+    c._get_async_client.assert_not_awaited()
+    pubsub.close.assert_awaited_once()
+
+
+def test_logger_and_delays_are_class_defaults():
+    c, _ = _client()
+    assert isinstance(c._logger, logging.Logger)
+    assert c._resubscribe_delays == (1, 2, 5, 10, 30)
 
 
 # ---------------- dispose / dispose_async ----------------

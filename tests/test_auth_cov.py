@@ -164,7 +164,7 @@ async def test_resolve_signing_tenant_not_impersonated():
 
 @pytest.mark.asyncio
 async def test_resolve_signing_tenant_same_id():
-    tenant = MagicMock()
+    tenant = MagicMock(); tenant.tenant_id = 't1'; tenant.id = 'id-t1'
     with patch(AU + 'jwt') as mj:
         mj.decode.return_value = {'impersonated': True, 'original_tenant_id': 't1'}
         assert await auth._resolve_signing_tenant('t', tenant, 't1', MagicMock()) is tenant
@@ -172,11 +172,14 @@ async def test_resolve_signing_tenant_same_id():
 
 @pytest.mark.asyncio
 async def test_resolve_signing_tenant_signer_none():
+    # An unknown signer is refused rather than verified with the request tenant's key.
     tenant = MagicMock()
     ts = MagicMock(); ts.get_tenant = AsyncMock(return_value=None)
     with patch(AU + 'jwt') as mj:
         mj.decode.return_value = {'impersonated': True, 'original_tenant_id': 'orig'}
-        assert await auth._resolve_signing_tenant('t', tenant, 't1', ts) is tenant
+        with pytest.raises(HTTPException) as e:
+            await auth._resolve_signing_tenant('t', tenant, 't1', ts)
+    assert e.value.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -267,14 +270,17 @@ async def test_authenticate_third_party_fails(mock_extract, mock_vwf, mock_bcm):
 @patch(AU + 'validate_jwt_token', new_callable=AsyncMock)
 @patch(AU + 'extract_token_from_request', new_callable=AsyncMock)
 async def test_authenticate_tenant_token_primary_success(mock_extract, mock_vjt, mock_rst, mock_bcm, mock_act):
+    from blocks_genesis._tenant.tenant import Tenant
+    tenant = Tenant(_id='id-tid', TenantId='tid')
     mock_extract.return_value = ('tok', False, 'app.com')
     ctx = MagicMock(); ctx.tenant_id = 'tid'
     mock_bcm.get_context.return_value = ctx
-    mock_rst.return_value = MagicMock()
-    mock_vjt.return_value = {'sub': 'u1'}
+    mock_rst.return_value = tenant
+    mock_vjt.return_value = {'sub': 'u1', 'tenant_id': 'tid'}
     mock_bcm.create_from_jwt_claims.return_value = MagicMock(user_id='u1', tenant_id='tid')
-    ts = MagicMock(); ts.get_tenant = AsyncMock(return_value=MagicMock())
-    assert await auth.authenticate(MagicMock(), ts, cache_client=MagicMock()) == {'sub': 'u1'}
+    ts = MagicMock(); ts.get_tenant = AsyncMock(return_value=tenant)
+    assert await auth.authenticate(MagicMock(), ts, cache_client=MagicMock()) == {'sub': 'u1', 'tenant_id': 'tid'}
+    assert mock_bcm.create_from_jwt_claims.call_args.args[1] == 'tid'
 
 
 @pytest.mark.asyncio
@@ -602,7 +608,7 @@ def test_authorize_missing_resource_raises():
 @patch(AU + 'BlocksContextManager')
 @patch(AU + 'DbContext')
 @patch(AU + 'CacheProvider')
-@patch(AU + 'TenantService')
+@patch(AU + 'get_tenant_service')
 async def test_authorize_dependency_success(mock_ts, mock_cp, mock_db, mock_bcm, mock_auth, mock_csa):
     dep = auth.authorize('res')
     ctx = MagicMock(); mock_bcm.get_context.return_value = ctx
@@ -615,7 +621,7 @@ async def test_authorize_dependency_success(mock_ts, mock_cp, mock_db, mock_bcm,
 @patch(AU + 'BlocksContextManager')
 @patch(AU + 'DbContext')
 @patch(AU + 'CacheProvider')
-@patch(AU + 'TenantService')
+@patch(AU + 'get_tenant_service')
 async def test_authorize_dependency_no_context(mock_ts, mock_cp, mock_db, mock_bcm, mock_auth):
     dep = auth.authorize('res')
     mock_bcm.get_context.return_value = None
@@ -628,7 +634,7 @@ async def test_authorize_dependency_no_context(mock_ts, mock_cp, mock_db, mock_b
 @patch(AU + 'BlocksContextManager')
 @patch(AU + 'DbContext')
 @patch(AU + 'CacheProvider')
-@patch(AU + 'TenantService')
+@patch(AU + 'get_tenant_service')
 async def test_authorize_dependency_bypass(mock_ts, mock_cp, mock_db, mock_bcm, mock_auth):
     dep = auth.authorize(bypass_authorization=True)
     ctx = MagicMock(); mock_bcm.get_context.return_value = ctx
@@ -641,7 +647,7 @@ async def test_authorize_dependency_bypass(mock_ts, mock_cp, mock_db, mock_bcm, 
 @patch(AU + 'BlocksContextManager')
 @patch(AU + 'DbContext')
 @patch(AU + 'CacheProvider')
-@patch(AU + 'TenantService')
+@patch(AU + 'get_tenant_service')
 async def test_authorize_dependency_no_access(mock_ts, mock_cp, mock_db, mock_bcm, mock_auth, mock_csa):
     dep = auth.authorize('res')
     ctx = MagicMock(); mock_bcm.get_context.return_value = ctx
