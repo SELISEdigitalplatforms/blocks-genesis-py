@@ -41,6 +41,7 @@ class TenantCacheUpdateMessage(BaseModel):
     class Config:
         extra = "ignore"
         validate_by_name = True
+        hide_input_in_errors = True
 
 
 class TenantReadError(Exception):
@@ -425,7 +426,7 @@ class TenantService:
     async def _handle_update(self, message: str):
         """Process tenant update notifications and keep cache in sync."""
         try:
-            _logger.info(f"Processing tenant update from message: {message}")
+            _logger.info("Processing tenant update message (%d bytes)", len(message))
             cache_update = self._parse_tenant_cache_update(message)
             if cache_update is None:
                 _logger.warning("Received invalid tenant update payload")
