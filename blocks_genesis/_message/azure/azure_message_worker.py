@@ -75,9 +75,7 @@ class AzureMessageWorker:
             receiver_tasks.append(self.safe_receiver_wrapper(receiver, queue_name))
 
         for topic_name in self._message_config.azure_service_bus_configuration.topics:
-            subscription_name = self._message_config.subscription_name.get(
-                topic_name, "default-subscription"
-            )
+            subscription_name = self._message_config.get_subscription_name(topic_name)
             receiver = self._service_bus_client.get_subscription_receiver(
                 topic_name=topic_name,
                 subscription_name=subscription_name,

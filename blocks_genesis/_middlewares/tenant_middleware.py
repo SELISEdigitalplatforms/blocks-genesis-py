@@ -208,6 +208,8 @@ class TenantValidationMiddleware(BaseHTTPMiddleware):
         )
 
     def _is_valid_origin_or_referer(self, request: Request, tenant: Tenant) -> bool:
+        """Advisory only: a browser sets Origin and Referer, but any other client can send or omit them.
+        A request with neither header is allowed, so this must not be relied on for security."""
         def extract_domain(url: str) -> str:
             try:
                 if not url:

@@ -491,7 +491,7 @@ async def test_check_standard_access_impersonated(mock_q, mock_p):
 
 
 @pytest.mark.asyncio
-async def test_check_quota_returns_true():
+async def test_check_quota_allows_when_the_limit_cannot_be_read():
     ctx = MagicMock(); ctx.tenant_id = 'tid'
     assert await auth._check_quota(ctx, 'res', MagicMock()) is True
 
