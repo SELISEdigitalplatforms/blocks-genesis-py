@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from blocks_genesis._core import api
 
@@ -75,6 +75,18 @@ def test_configure_genesis_static_cwd(mock_instr, mock_sf, tmp_path, monkeypatch
 
 
 @patch(A + 'FastAPIInstrumentor')
+def test_static_mount_at_root_does_not_hide_genesis_routes(mock_instr, tmp_path):
+    (tmp_path / 'index.html').write_text('<html>site</html>')
+    app = FastAPI()
+    api.configure_genesis(app, show_docs=True, serve_static=True, static_mount_path='/', static_dir=str(tmp_path))
+    with TestClient(app) as client:
+        assert client.get('/ping').json()['status'] == 'healthy'
+        assert client.get('/swagger/index.html').status_code == 200
+        assert client.get('/openapi.json').status_code == 200
+        assert client.get('/').text == '<html>site</html>'
+
+
+@patch(A + 'FastAPIInstrumentor')
 def test_endpoints_show_docs(mock_instr):
     app = FastAPI()
     api.configure_genesis(app, show_docs=True)
@@ -89,7 +101,7 @@ def test_endpoints_no_docs(mock_instr):
     app = FastAPI()
     api.configure_genesis(app, show_docs=False)
     with TestClient(app) as client:
-        assert 'NOT_ALLOWED' in client.get('/swagger/index.html').text
+        assert client.get('/swagger/index.html').status_code == 404
 
 
 def _find_openapi_endpoint(app):
@@ -113,4 +125,6 @@ async def test_custom_openapi_endpoint_show_docs(mock_instr):
 async def test_custom_openapi_endpoint_no_docs(mock_instr):
     app = FastAPI()
     api.configure_genesis(app, show_docs=False)
-    assert await _find_openapi_endpoint(app)() == {}
+    with pytest.raises(HTTPException) as exc:
+        await _find_openapi_endpoint(app)()
+    assert exc.value.status_code == 404

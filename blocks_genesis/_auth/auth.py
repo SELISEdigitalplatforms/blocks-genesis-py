@@ -1,22 +1,35 @@
+import hashlib
 import json
 import logging
 import asyncio
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple
+import time
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 from fastapi import Request, HTTPException, Depends
-import aiohttp
 import jwt
-from jwt import PyJWKClient, ExpiredSignatureError, InvalidTokenError
+from jwt import ExpiredSignatureError, InvalidTokenError
+from jwt.exceptions import InvalidKeyError
 from cryptography import x509
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.hazmat.primitives import serialization
 
-from blocks_genesis._auth.blocks_context import BlocksContext, BlocksContextManager
+from blocks_genesis._auth.blocks_context import (
+    DEFAULT_ORGANIZATION,
+    BlocksContext,
+    BlocksContextManager,
+)
 from blocks_genesis._auth.jwt_signing_algorithm import (
     is_single_key_source,
     is_symmetric,
     to_wire_names,
+)
+from blocks_genesis._auth.key_fetch import (
+    MAX_RESPONSE_BYTES,
+    KeyFetchError,
+    fetch_key_material,
+    get_jwks_cache,
 )
 from blocks_genesis._auth.security_log import security_log
 from blocks_genesis._auth.third_party_provider import ThirdPartyJwtProvider
@@ -30,6 +43,8 @@ from blocks_genesis._cache.cache_provider import CacheProvider
 from blocks_genesis._delegation.context import AuthClaimsContext
 from blocks_genesis._database.db_context import DbContext
 from blocks_genesis._lmt.activity import Activity
+from blocks_genesis._core.configuration import is_local_deployment
+from blocks_genesis._middlewares.origin_policy import is_tenant_origin_host
 from blocks_genesis._subscription.context import SubscriptionUsageContext
 from blocks_genesis._subscription.models import UsageResult, UsageSnapshot
 from blocks_genesis._subscription.usage_service import SubscriptionUsageService
@@ -42,6 +57,9 @@ _logger = logging.getLogger(__name__)
 # Names which external identity provider a token came from, for the one case issuer
 # and audience cannot separate: two providers configured with both the same.
 THIRD_PARTY_IDP_HEADER = "x-blocks-idp"
+
+# Methods that only read. A cookie on any other method needs the caller's origin.
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 
@@ -80,6 +98,9 @@ async def _extract_token_from_cookie(request: Request, tenant_service: TenantSer
     1. Tries tenant-specific cookie using application domain
     2. Falls back to third-party token cookie from tenant config
 
+    On a method other than GET, HEAD or OPTIONS a cookie is read only when the
+    Origin or Referer is one of the tenant's application domains.
+
     Returns: (token, is_third_party_token, application_domain)
     """
     # Validate BlocksContext exists with tenant_id
@@ -89,6 +110,16 @@ async def _extract_token_from_cookie(request: Request, tenant_service: TenantSer
 
     # Resolve application domain from request headers (Origin > Referer > Host)
     application_domain = BlocksContextManager.resolve_application_domain(request)
+
+    tenant = None
+    if request.method not in _SAFE_METHODS:
+        # A browser attaches cookies whatever page started the request; without an Origin
+        # or Referer from the tenant's own application, only the Authorization header counts.
+        if not application_domain:
+            return None, False, None
+        tenant = await tenant_service.get_tenant(context.tenant_id)
+        if not tenant or not is_tenant_origin_host(application_domain, tenant):
+            return None, False, None
 
     # Localhost/dev fallback: support loopback equivalents when the cookie was set on a different local host alias.
     local_token = _try_localhost_alias_cookie(request, application_domain)
@@ -102,7 +133,8 @@ async def _extract_token_from_cookie(request: Request, tenant_service: TenantSer
             return token, False, application_domain  # Primary tenant token, not third-party
 
     # 2. Fall back to third-party token cookie
-    tenant = await tenant_service.get_tenant(context.tenant_id)
+    if tenant is None:
+        tenant = await tenant_service.get_tenant(context.tenant_id)
     if not tenant or not tenant.third_party_jwt_token_parameters:
         return None, False, None
 
@@ -121,6 +153,8 @@ def _try_localhost_alias_cookie(request: Request, application_domain: Optional[s
     """Return a cookie set under a loopback alias when the app domain is a localhost host."""
     if not (application_domain and BlocksContextManager.is_localhost_host(application_domain)):
         return None
+    if not is_local_deployment():
+        return None
     for local_host in ("localhost", "127.0.0.1", "::1"):
         if local_host == application_domain:
             continue
@@ -134,19 +168,24 @@ def _try_localhost_alias_cookie(request: Request, application_domain: Optional[s
 # CERTIFICATE HANDLING
 # ============================================================================
 
-async def fetch_cert_bytes(cert_url: str) -> bytes:
-    if cert_url.startswith("http"):
-        async with aiohttp.ClientSession() as session:
-            async with session.get(cert_url) as resp:
-                resp.raise_for_status()
-                return await resp.read()
-    else:
-        loop = asyncio.get_running_loop()
-        try:
-            with open(cert_url, "rb") as f:
-                return await loop.run_in_executor(None, f.read)
-        except Exception as e:
-            raise RuntimeError(f"Error reading cert file {cert_url}: {e}")
+async def fetch_cert_bytes(cert_url: str, allow_file: bool = False, check_address: bool = True) -> bytes:
+    """Only the primary tenant certificate may be a file, or skip the address check."""
+    if urlsplit(cert_url).scheme.lower() in ("http", "https"):
+        return await fetch_key_material(cert_url, check_address=check_address)
+    if not allow_file:
+        raise KeyFetchError("scheme_not_allowed")
+    return await asyncio.to_thread(_read_certificate_file, cert_url)
+
+
+def _read_certificate_file(path: str) -> bytes:
+    try:
+        with open(path, "rb") as f:
+            data = f.read(MAX_RESPONSE_BYTES + 1)
+    except OSError:
+        raise RuntimeError("Error reading cert file") from None
+    if len(data) > MAX_RESPONSE_BYTES:
+        raise KeyFetchError("too_large")
+    return data
 
 
 # ============================================================================
@@ -233,6 +272,8 @@ async def authenticate(
         # The provider wrote these claims, so none of them may reach a consumer. Strip
         # them, then rebuild from the tenant record and the provider's own mapping.
         payload = BlocksContextManager.strip_reserved_claims(payload)
+        # Written by this library from the request, never taken from the provider.
+        payload[BlocksContext.REQUEST_URI_CLAIM] = str(request.url.path)
         mapped = map_third_party_claims(payload, provider)
         if mapped is None:
             raise HTTPException(status_code=401, detail="Token validation failed")
@@ -247,7 +288,7 @@ async def authenticate(
                 user_name=mapped["user_name"],
                 display_name=mapped["display_name"],
                 application_domain=application_domain or "",
-                request_uri=str(request.url),
+                request_uri=str(request.url.path),
             )
         except ValueError as err:
             security_log(
@@ -349,10 +390,11 @@ async def _validate_authenticated_token(
 
     try:
         return await validate_jwt_token(token, signing_tenant, cache_client, request), None
-    except InvalidTokenError as err:
+    except (InvalidTokenError, InvalidKeyError) as err:
         # PyJWT's own error, not an HTTPException. Letting it escape turned a bad
         # signature into a 500, and -- before the opt-in routing above -- stopped a
-        # bearer third-party token ever reaching the provider path.
+        # bearer third-party token ever reaching the provider path. InvalidKeyError
+        # (a certificate key that does not fit RS256) is not an InvalidTokenError.
         security_log(
             "authentication_failed",
             "Primary token validation failed.",
@@ -402,48 +444,98 @@ def create_certificate(certificate_data: bytes, password: Optional[str] = None):
     return None
 
 
+def certificate_validity_error(certificate, now: Optional[datetime] = None) -> Optional[str]:
+    """"not_yet_valid" or "expired" when `now` is outside the certificate's dates, else None."""
+    now = now or datetime.now(timezone.utc)
+    if now < certificate.not_valid_before_utc:
+        return "not_yet_valid"
+    if now > certificate.not_valid_after_utc:
+        return "expired"
+    return None
+
+
+def _certificate_cache_ttl(certificate, cap: int) -> int:
+    """The cap, or the seconds the certificate has left if fewer."""
+    remaining = certificate.not_valid_after_utc - datetime.now(timezone.utc)
+    return min(cap, int(remaining.total_seconds()))
+
+
+def _path_hash(path: str) -> str:
+    """Keys a cached certificate to its path, so a changed path is fetched again."""
+    return hashlib.sha256(path.encode()).hexdigest()[:16]
+
+
+# Certificates are cached in this process only. Redis is shared, so a certificate
+# read from it would let anyone able to write there sign tokens (audit F-05).
+CERTIFICATE_CACHE_MAX_ENTRIES = 4096
+
+
+class _CertificateCache:
+    def __init__(self, time_func: Callable[[], float] = time.monotonic):
+        self._time = time_func
+        self._entries: Dict[str, Tuple[bytes, float]] = {}
+
+    def get(self, key: str) -> Optional[bytes]:
+        entry = self._entries.get(key)
+        if entry is None:
+            return None
+        if self._time() >= entry[1]:
+            self._entries.pop(key, None)
+            return None
+        return entry[0]
+
+    def set(self, key: str, data: bytes, ttl: int) -> None:
+        if key not in self._entries and len(self._entries) >= CERTIFICATE_CACHE_MAX_ENTRIES:
+            self._entries.clear()
+        self._entries[key] = (data, self._time() + ttl)
+
+    def clear(self) -> None:
+        self._entries.clear()
+
+
+_certificate_cache = _CertificateCache()
+
+
 async def get_tenant_cert(cache_client: CacheClient, tenant: Tenant, tenant_id: str) -> Optional[bytes]:
     """
-    Get tenant's public certificate from cache or fetch and cache it.
-    Caches based on certificate validity period.
+    Get tenant's public certificate from the in-process cache or fetch and cache it.
+    A certificate outside its validity dates is neither returned nor cached.
+    `cache_client` is not used for certificates.
     """
     if not tenant.jwt_token_parameters:
         return None
-    
-    cache_key = f"tetocertpublic::{tenant_id}"
-    
-    # Try cache first
-    try:
-        cached = cache_client.get_bytes_value(cache_key)
-        if cached:
-            return cached
-    except Exception:
-        pass
-    
-    # Fetch certificate
-    cert_bytes = await fetch_cert_bytes(tenant.jwt_token_parameters.public_certificate_path)
+
+    path = tenant.jwt_token_parameters.public_certificate_path
+    cache_key = f"tetocertpublic::{tenant_id}::{_path_hash(path or '')}"
+
+    cached = _certificate_cache.get(cache_key)
+    if cached:
+        return cached
+
+    # The platform writes this path, so it may be a file or an internal address.
+    cert_bytes = await fetch_cert_bytes(path, allow_file=True, check_address=False)
     if not cert_bytes:
         return None
-    
-    # Calculate TTL based on certificate validity
-    try:
-        now = datetime.now(timezone.utc)
-        issue_date = tenant.jwt_token_parameters.issue_date
-        if issue_date and issue_date.tzinfo is None:
-            issue_date = issue_date.replace(tzinfo=timezone.utc)
-        
-        if issue_date:
-            days_remaining = (
-                tenant.jwt_token_parameters.certificate_valid_for_number_of_days
-                - (now - issue_date).days - 1
-            )
-            ttl = max(60, days_remaining * 86400)  # At least 60 seconds
-            
-            if ttl > 0:
-                await cache_client.add_bytes_value_async(cache_key, cert_bytes, ttl)
-    except Exception as e:
-        _logger.warning(f"Failed to cache certificate: {e}")
-    
+
+    certificate = create_certificate(cert_bytes, tenant.jwt_token_parameters.public_certificate_password)
+    if certificate is None:
+        return None
+
+    reason = certificate_validity_error(certificate)
+    if reason is not None:
+        security_log(
+            "tenant_certificate_not_valid",
+            "The tenant's public certificate is outside its validity dates, so tokens "
+            "signed for it are refused.",
+            detail={"tenantId": tenant_id, "reason": reason},
+            is_warning=True,
+        )
+        return None
+
+    ttl = _certificate_cache_ttl(certificate, PRIMARY_CERTIFICATE_CACHE_TTL_SECONDS)
+    if ttl >= 1:
+        _certificate_cache.set(cache_key, cert_bytes, ttl)
+
     return cert_bytes
 
 
@@ -473,7 +565,19 @@ async def validate_jwt_token(
     cert = create_certificate(cert_bytes, tenant.jwt_token_parameters.public_certificate_password)
     if not cert:
         raise HTTPException(500, "Failed to load certificate")
-    
+
+    # A cached certificate can expire after it was cached.
+    reason = certificate_validity_error(cert)
+    if reason is not None:
+        security_log(
+            "tenant_certificate_not_valid",
+            "The tenant's public certificate is outside its validity dates, so tokens "
+            "signed for it are refused.",
+            detail={"tenantId": tenant.tenant_id, "reason": reason},
+            is_warning=True,
+        )
+        raise HTTPException(500, "Failed to load certificate")
+
     public_key = cert.public_key()
     public_key_pem = public_key.public_bytes(
         encoding=serialization.Encoding.PEM,
@@ -501,7 +605,7 @@ async def validate_jwt_token(
         )
         
         # Enrich payload with request metadata
-        payload[BlocksContext.REQUEST_URI_CLAIM] = str(request.url)
+        payload[BlocksContext.REQUEST_URI_CLAIM] = str(request.url.path)
         payload[BlocksContext.TOKEN_CLAIM] = token
         
         return payload
@@ -528,9 +632,58 @@ async def validate_jwt_token(
 # re-fetching the file per request.
 PROVIDER_CERTIFICATE_CACHE_TTL_SECONDS = 3600
 
+# How long the primary tenant certificate is cached, at most.
+PRIMARY_CERTIFICATE_CACHE_TTL_SECONDS = 3600
+
 # genesis-net pins ClockSkew to zero on the primary path only. The third-party path
 # leaves it at the framework default, so the two runtimes accept the same tokens.
 THIRD_PARTY_LEEWAY_SECONDS = 300
+
+# Provider settings already warned about in this process, as (tenant, key, event).
+PROVIDER_WARNINGS_MAX_ENTRIES = 1024
+_provider_warnings_logged: set = set()
+
+
+def _warn_about_provider_configuration(provider: ThirdPartyJwtProvider) -> None:
+    """Warn once per provider about settings that widen what it accepts.
+
+    blocks-genesis-net accepts all three (BuildProviderValidationParametersAsync turns the
+    issuer and audience checks off when they are blank), so the token is still validated
+    as before; the warning is for the tenant admin.
+    """
+    findings = []
+    if not (provider.issuer or "").strip():
+        findings.append((
+            "third_party_provider_issuer_not_checked",
+            "This provider has no Issuer, so the token's issuer is not checked. It only "
+            "receives tokens that carry no iss.",
+        ))
+    if not provider.audiences:
+        findings.append((
+            "third_party_provider_audience_not_checked",
+            "This provider has no Audiences, so the token's audience is not checked: a token "
+            "its issuer minted for any other application is accepted.",
+        ))
+    if provider.default_organization_id == DEFAULT_ORGANIZATION:
+        findings.append((
+            "third_party_provider_default_organization",
+            "This provider's DefaultOrganizationId is still \"default\", which consumers read "
+            "as tenant-wide. Set the organization its users belong to.",
+        ))
+
+    for event_name, message in findings:
+        marker = (provider.tenant_id, provider.key, event_name)
+        if marker in _provider_warnings_logged:
+            continue
+        if len(_provider_warnings_logged) >= PROVIDER_WARNINGS_MAX_ENTRIES:
+            _provider_warnings_logged.clear()
+        _provider_warnings_logged.add(marker)
+        security_log(
+            event_name,
+            message,
+            detail={"tenantId": provider.tenant_id, "key": provider.key},
+            is_warning=True,
+        )
 
 
 class ThirdPartyValidation(NamedTuple):
@@ -633,17 +786,12 @@ async def _resolve_certificate_key(
         if password is None:
             return None
 
-    # Optional on purpose: without a cache the certificate is simply fetched each time,
-    # which is slower but still correct. Failing the token instead would make a cache
-    # outage look like a provider misconfiguration.
-    cache_key = f"tpprovcert::{provider.tenant_id}::{provider.key}"
-    certificate_data = None
-
-    if cache_client is not None:
-        try:
-            certificate_data = cache_client.get_bytes_value(cache_key)
-        except Exception:
-            certificate_data = None
+    cache_key = (
+        f"tpprovcert::{provider.tenant_id}::{provider.key}::"
+        f"{_path_hash(provider.public_certificate_path)}"
+    )
+    fetched = False
+    certificate_data = _certificate_cache.get(cache_key)
 
     if not certificate_data:
         try:
@@ -652,21 +800,14 @@ async def _resolve_certificate_key(
             security_log(
                 "third_party_certificate_unreadable",
                 "The provider's public certificate could not be read from its configured "
-                "path. The path must be an absolute URL this process can fetch without "
-                "credentials, or a file on this host.",
+                "path. The path must be an https URL on a public host. File paths are not "
+                "accepted for third-party providers.",
                 err,
                 detail={"key": provider.key},
                 is_warning=True,
             )
             return None
-
-        if certificate_data and cache_client is not None:
-            try:
-                await cache_client.add_bytes_value_async(
-                    cache_key, certificate_data, PROVIDER_CERTIFICATE_CACHE_TTL_SECONDS
-                )
-            except Exception:
-                pass
+        fetched = True
 
     certificate = create_certificate(certificate_data, password)
     if certificate is None:
@@ -682,6 +823,23 @@ async def _resolve_certificate_key(
             is_warning=True,
         )
         return None
+
+    # Checked on a cache hit too: a cached certificate can expire after it was cached.
+    reason = certificate_validity_error(certificate)
+    if reason is not None:
+        security_log(
+            "third_party_certificate_not_valid",
+            "The provider's certificate is outside its validity dates, so its tokens are "
+            "refused.",
+            detail={"key": provider.key, "reason": reason},
+            is_warning=True,
+        )
+        return None
+
+    if fetched:
+        ttl = _certificate_cache_ttl(certificate, PROVIDER_CERTIFICATE_CACHE_TTL_SECONDS)
+        if ttl >= 1:
+            _certificate_cache.set(cache_key, certificate_data, ttl)
 
     return certificate.public_key().public_bytes(
         encoding=serialization.Encoding.PEM,
@@ -729,11 +887,7 @@ async def _resolve_provider_key(
     # so it survives the provider rotating one without anything here being touched.
     if provider.jwks_url:
         try:
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(
-                None,
-                lambda: PyJWKClient(provider.jwks_url).get_signing_key_from_jwt(token).key,
-            )
+            return await get_jwks_cache().get_signing_key(provider.jwks_url, token)
         except Exception as err:
             security_log(
                 "third_party_certificate_unreadable",
@@ -940,21 +1094,15 @@ def map_third_party_claims(
 
 def _report_selection_failure(
     selection,
-    issuer: str,
-    audiences: List[str],
     providers: List[ThirdPartyJwtProvider],
     header_key: Optional[str],
 ) -> None:
-    """Explain a selection miss in the terms an operator can act on: what the token
-    carried, beside what is configured."""
+    """Explain a selection miss by provider keys, without the token's or the providers'
+    issuer and audiences."""
     detail = {
-        "tokenIssuer": issuer,
-        "tokenAudiences": audiences,
         "headerKey": header_key,
         "candidates": selection.candidate_count,
-        "configured": [
-            {"Key": p.key, "Issuer": p.issuer, "Audiences": p.audiences} for p in providers
-        ],
+        "configuredKeys": [p.key for p in providers],
     }
 
     outcome = selection.outcome
@@ -1125,7 +1273,7 @@ async def _run_fallback(
     selection = select_third_party_provider(providers, issuer, audiences, header_key)
 
     if not selection.is_selected:
-        _report_selection_failure(selection, issuer, audiences, providers, header_key)
+        _report_selection_failure(selection, providers, header_key)
         return None, selection.outcome
 
     provider = selection.provider
@@ -1141,6 +1289,8 @@ async def _run_fallback(
             "candidates": selection.candidate_count,
         },
     )
+
+    _warn_about_provider_configuration(provider)
 
     key = await _resolve_provider_key(token, tenant, provider, cache_client)
     if key is None:
@@ -1160,6 +1310,8 @@ async def _run_fallback(
                 "verify_nbf": True,
                 "verify_iss": bool(provider.issuer),
                 "verify_aud": bool(provider.audiences),
+                # As blocks-genesis-net (RequireExpirationTime). iat is not required there either.
+                "require": ["exp"],
             },
             leeway=THIRD_PARTY_LEEWAY_SECONDS,
         )
@@ -1173,7 +1325,7 @@ async def _run_fallback(
         )
         return None, ThirdPartyProviderSelection.SELECTED
 
-    claims[BlocksContext.REQUEST_URI_CLAIM] = str(request.url)
+    claims[BlocksContext.REQUEST_URI_CLAIM] = str(request.url.path)
 
     security_log(
         "fallback_token_validated",
@@ -1493,7 +1645,8 @@ def subscription_usage_snapshot(
     alongside it.
 
     tenant_id / organization_id: fallback ids for a request with no context. Without
-    them, a missing context is still a 401.
+    them, a context that is missing or not signed in is a 401 -- the tenant middleware's
+    anonymous context carries ids but is not a sign-in.
 
     Reads usage straight from Mongo (no Utilities HTTP call). Read it back with
     `SubscriptionUsageContext.current()`. Never raises on a missing organization or a DB
@@ -1505,7 +1658,8 @@ def subscription_usage_snapshot(
         else:
             context = BlocksContextManager.get_context()
 
-        if not context and not (tenant_id and organization_id):
+        signed_in = context is not None and context.is_authenticated is True
+        if not signed_in and not (tenant_id and organization_id):
             raise HTTPException(status_code=401, detail="Missing context")
 
         await resolve_subscription_usage(

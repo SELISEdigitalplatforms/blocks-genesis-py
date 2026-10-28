@@ -20,7 +20,7 @@ class _FakeCollection:
         self.docs = []
         self.last_filter = None
 
-    def find(self, filt):
+    def find(self, filt, sort=None):
         self.last_filter = filt
         return [d for d in self.docs if _matches(d, filt)]
 

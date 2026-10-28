@@ -161,8 +161,8 @@ async def test_safe_receiver_wrapper_success():
     w = _worker()
     w.process_receiver = AsyncMock()
     rec = MagicMock()
-    await w.safe_receiver_wrapper(rec, 'q')
-    w.process_receiver.assert_awaited_once_with(rec)
+    await w.safe_receiver_wrapper(rec, 'q', 2)
+    w.process_receiver.assert_awaited_once_with(rec, max_delivery_count=2)
 
 
 @pytest.mark.asyncio
@@ -181,27 +181,17 @@ async def test_process_receiver_success():
     msg = MagicMock()
     rec = FakeReceiver([msg])
     await w.process_receiver(rec)
-    w.message_handler.assert_awaited_once_with(rec, msg)
+    w.message_handler.assert_awaited_once_with(rec, msg, max_delivery_count=None)
 
 
 @pytest.mark.asyncio
-async def test_process_receiver_handler_error_abandon():
+async def test_process_receiver_logs_and_continues_without_abandoning():
     w = _worker()
-    w.message_handler = AsyncMock(side_effect=Exception('x'))
-    msg = MagicMock()
-    rec = FakeReceiver([msg])
+    w.message_handler = AsyncMock(side_effect=[Exception('x'), None])
+    rec = FakeReceiver([MagicMock(), MagicMock()])
     await w.process_receiver(rec)
-    rec.abandon_message.assert_awaited_once_with(msg)
-
-
-@pytest.mark.asyncio
-async def test_process_receiver_abandon_error():
-    w = _worker()
-    w.message_handler = AsyncMock(side_effect=Exception('x'))
-    msg = MagicMock()
-    rec = FakeReceiver([msg])
-    rec.abandon_message = AsyncMock(side_effect=Exception('abandon fail'))
-    await w.process_receiver(rec)
+    rec.abandon_message.assert_not_awaited()
+    assert w.message_handler.await_count == 2
 
 
 # ---------------- decode_app_properties ----------------
@@ -258,18 +248,40 @@ async def test_message_handler_body_none_error_abandon():
     receiver.abandon_message = AsyncMock()
     receiver.complete_message = AsyncMock()
     with patch(AMW + 'BlocksContextManager'), patch(AMW + 'TraceContextTextMapPropagator'):
-        with pytest.raises(Exception):
-            await w.message_handler(receiver, message)
+        await w.message_handler(receiver, message)
     receiver.abandon_message.assert_awaited_once_with(message)
 
 
 @pytest.mark.asyncio
-async def test_message_handler_int_body_bad_sc_bad_baggage():
+async def test_message_handler_bad_security_context_dead_letters():
     w = _worker()
     w.start_auto_renewal_task = AsyncMock()
     message = MagicMock(); message.message_id = 'm3'
     message.application_properties = {
         "SecurityContext": "{bad",
+        "Baggage": "{}",
+    }
+    message.body = [b'{"body": "{}", "type": "EVT"}']
+    receiver = MagicMock()
+    receiver.abandon_message = AsyncMock()
+    receiver.complete_message = AsyncMock()
+    receiver.dead_letter_message = AsyncMock()
+    with patch(AMW + 'BlocksContextManager'), patch(AMW + 'TraceContextTextMapPropagator'):
+        await w.message_handler(receiver, message)
+    receiver.dead_letter_message.assert_awaited_once_with(
+        message, reason="InvalidSecurityContext", error_description="security_context_invalid"
+    )
+    receiver.abandon_message.assert_not_awaited()
+    w._consumer.process_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_message_handler_int_body_bad_baggage_abandons():
+    w = _worker()
+    w.start_auto_renewal_task = AsyncMock()
+    message = MagicMock(); message.message_id = 'm3'
+    message.application_properties = {
+        "SecurityContext": "",
         "Baggage": "not-json",
     }
     message.body = 12345
@@ -277,8 +289,8 @@ async def test_message_handler_int_body_bad_sc_bad_baggage():
     receiver.abandon_message = AsyncMock()
     receiver.complete_message = AsyncMock()
     with patch(AMW + 'BlocksContextManager'), patch(AMW + 'TraceContextTextMapPropagator'):
-        with pytest.raises(Exception):
-            await w.message_handler(receiver, message)
+        await w.message_handler(receiver, message)
+    receiver.abandon_message.assert_awaited_once_with(message)
 
 
 @pytest.mark.asyncio
@@ -292,8 +304,8 @@ async def test_message_handler_abandon_fails():
     receiver.abandon_message = AsyncMock(side_effect=Exception('abandon fail'))
     receiver.complete_message = AsyncMock()
     with patch(AMW + 'BlocksContextManager'), patch(AMW + 'TraceContextTextMapPropagator'):
-        with pytest.raises(Exception):
-            await w.message_handler(receiver, message)
+        await w.message_handler(receiver, message)
+    receiver.abandon_message.assert_awaited_once_with(message)
 
 
 # ---------------- start_auto_renewal_task ----------------

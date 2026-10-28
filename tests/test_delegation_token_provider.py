@@ -68,7 +68,7 @@ class FakeSession:
     async def __aexit__(self, *exc):
         return False
 
-    def post(self, url, data=None, headers=None):
+    def post(self, url, data=None, headers=None, allow_redirects=True):
         self._recorder["calls"] += 1
         index = self._recorder["calls"]
         self._recorder["urls"].append(url)

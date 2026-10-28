@@ -21,6 +21,9 @@ def _svc():
     s._disposed = False
     s._initialize_lock = asyncio.Lock()
     s._tenant_load_lock = asyncio.Lock()
+    s._tenant_loaded_at = {}
+    s._unknown_tenants = {}
+    s._unknown_domains = {}
     return s
 
 
@@ -52,14 +55,14 @@ async def test_get_tenant_cache_hit():
 @pytest.mark.asyncio
 async def test_get_tenant_loads_and_caches():
     s = _svc(); t = _t('t1')
-    s._load_tenant_from_db = AsyncMock(return_value=t)
+    s._find_tenant = AsyncMock(return_value=t)
     assert await s.get_tenant('t1') is t
     assert s._tenant_cache['t1'] is t
 
 
 @pytest.mark.asyncio
 async def test_get_tenant_load_returns_none():
-    s = _svc(); s._load_tenant_from_db = AsyncMock(return_value=None)
+    s = _svc(); s._find_tenant = AsyncMock(return_value=None)
     assert await s.get_tenant('t1') is None
 
 
@@ -107,14 +110,15 @@ def test_get_tenant_database_connection_strings():
 
 
 @pytest.mark.asyncio
-async def test_load_tenant_from_db_hit_none_exception():
+async def test_find_tenant_hit_none_raises():
     s = _svc()
     s.database.__getitem__.return_value.find_one = AsyncMock(return_value={'_id': 't1', 'TenantId': 't1'})
-    assert await s._load_tenant_from_db('t1') is not None
+    assert isinstance(await s._find_tenant('t1'), Tenant)
     s.database.__getitem__.return_value.find_one = AsyncMock(return_value=None)
-    assert await s._load_tenant_from_db('t1') is None
+    assert await s._find_tenant('t1') is None
     s.database.__getitem__.return_value.find_one = AsyncMock(side_effect=Exception('x'))
-    assert await s._load_tenant_from_db('t1') is None
+    with pytest.raises(Exception, match='x'):
+        await s._find_tenant('t1')
 
 
 @pytest.mark.asyncio
@@ -162,15 +166,22 @@ def test_normalize_cache_update():
 @pytest.mark.asyncio
 async def test_apply_update_message_all_paths():
     s = _svc()
+    find_one = AsyncMock(return_value=None)
+    s.database.__getitem__.return_value.find_one = find_one
     s._tenant_cache = {'t1': _t('t1')}
     await s._apply_update_message(TenantCacheUpdateMessage(action='remove', tenant_id='t1'))
     assert 't1' not in s._tenant_cache
     await s._apply_update_message(TenantCacheUpdateMessage(action='upsert'))
+    find_one.assert_not_awaited()
+    # The database, not the message, decides whether the tenant is disabled.
     s._tenant_cache = {'t2': _t('t2')}
-    await s._apply_update_message(TenantCacheUpdateMessage(action='upsert', tenant=_t('t2', disabled=True)))
+    find_one.return_value = {'_id': 't2', 'TenantId': 't2', 'IsDisabled': True}
+    await s._apply_update_message(TenantCacheUpdateMessage(action='upsert', tenant=_t('t2')))
     assert 't2' not in s._tenant_cache
+    find_one.return_value = {'_id': 't3', 'TenantId': 't3', 'DbConnectionString': 'db-conn'}
     await s._apply_update_message(TenantCacheUpdateMessage(action='upsert', tenant=_t('t3')))
-    assert 't3' in s._tenant_cache
+    assert s._tenant_cache['t3'].db_connection_string == 'db-conn'
+    find_one.assert_awaited_with({'$or': [{'_id': 't3'}, {'TenantId': 't3'}]})
 
 
 @pytest.mark.asyncio
@@ -266,3 +277,25 @@ def test_get_tenant_service_returns_existing():
     sentinel = MagicMock()
     with patch(TS + '_tenant_service', sentinel):
         assert ts.get_tenant_service() is sentinel
+
+@pytest.mark.asyncio
+async def test_get_tenant_by_domain_prefers_verified_in_cache():
+    s = _svc()
+    claimant = Tenant(_id='t1', TenantId='t1', Applications=[{'Domain': 'https://x.com'}])
+    owner = Tenant(_id='t2', TenantId='t2', Applications=[{'Domain': 'https://x.com', 'IsDomainVerified': True}])
+    s._tenant_cache['t1'] = claimant
+    s._tenant_cache['t2'] = owner
+    assert await s.get_tenant_by_domain('x.com') is owner
+
+
+@pytest.mark.asyncio
+async def test_get_tenant_by_domain_queries_verified_first():
+    s = _svc()
+    find_one = AsyncMock(side_effect=[None, {'_id': 't1', 'TenantId': 't1'}])
+    s.database.__getitem__.return_value.find_one = find_one
+    tenant = await s.get_tenant_by_domain('x.com')
+    assert tenant is not None and tenant.tenant_id == 't1'
+    first, second = (c.args[0]['Applications']['$elemMatch'] for c in find_one.await_args_list)
+    assert first['IsDomainVerified'] is True
+    assert 'IsDomainVerified' not in second
+    assert first['Domain'] == second['Domain'] == {'$in': ['http://x.com', 'https://x.com']}
