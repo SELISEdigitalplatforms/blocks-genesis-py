@@ -95,9 +95,17 @@ jobs:
         run: uv tool run twine check dist/*
 
       # Auth is OIDC Trusted Publishing (configured on pypi.org for this repo +
-      # workflow): no token, no secret.
+      # workflow): no token, no secret. Attestations are disabled because this
+      # job runs as a reusable workflow (release.yml called from main.yml) —
+      # the OIDC token exchange matches on job_workflow_ref (release.yml), but
+      # the sigstore attestation's Build Config URI records workflow_ref (the
+      # root caller, main.yml), which never matches the registered Trusted
+      # Publisher and makes PyPI reject the upload with a 400. PyPI itself
+      # documents reusable workflows as unsupported for Trusted Publishing.
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: false
 
       - name: Tag the release
         run: |
