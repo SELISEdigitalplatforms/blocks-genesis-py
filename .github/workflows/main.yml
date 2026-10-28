@@ -1,0 +1,55 @@
+name: Build (main)
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+  # A called reusable workflow cannot hold a permission the caller workflow
+  # never had, so id-token must be granted here, not only on release-job.
+  id-token: write
+
+# One pipeline per ref. A newer push supersedes an in-flight PR run, but pushes
+# to main are never cancelled — that would abort a publish midway.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  RUN_SONARQUBE: "true"
+
+jobs:
+  initialization:
+    runs-on: ubuntu-latest
+    outputs:
+      envvalue1: ${{ steps.setvar.outputs.envvar1 }}
+    steps:
+      - name: Set values
+        id: setvar
+        run: |
+          echo "envvar1=$RUN_SONARQUBE" >> $GITHUB_OUTPUT
+
+  sonarqube-job:
+    if: ${{ needs.initialization.outputs.envvalue1 == 'true' }}
+    needs: [initialization]
+    uses: ./.github/workflows/2_sonar.yml
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN_GLOBAL }}
+
+  # Publishes only after the gate is green, and only on a push. On a PR this
+  # job shows as skipped — never make it a required status check, since a
+  # skipped required check blocks merges exactly like a failing one.
+  release-job:
+    if: ${{ github.event_name == 'push' }}
+    needs: [sonarqube-job]
+    permissions:
+      contents: write   # push the version tag
+      id-token: write   # PyPI Trusted Publishing (OIDC)
+    uses: ./.github/workflows/release.yml
