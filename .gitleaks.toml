@@ -1,0 +1,8 @@
+# Extends the default gitleaks rules. Each allowlist entry is one known fake value, never a path.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Fake HS256 token (sub: sentinel, signature: sentinel) in tests/test_telemetry_redaction.py"
+regexTarget = "match"
+regexes = ['''eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiJzZW50aW5lbCJ9\.c2VudGluZWw''']

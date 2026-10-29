@@ -12,7 +12,7 @@ P = 'blocks_genesis._database.mongo_context.'
 @patch(P + 'register')
 @patch(P + 'MongoEventSubscriber')
 async def test_get_database_missing_conn_raises(mock_sub, mock_register, mock_gts):
-    mc._db_cache.set({}); mc._client_cache.set({})
+    mc._databases.clear(); mc._clients.clear()
     provider = MongoDbContextProvider()
     mock_gts.return_value.get_db_connection = AsyncMock(return_value=(None, None))
     with pytest.raises(ValueError):
@@ -24,7 +24,7 @@ async def test_get_database_missing_conn_raises(mock_sub, mock_register, mock_gt
 @patch(P + 'register')
 @patch(P + 'MongoEventSubscriber')
 async def test_get_database_conn_already_cached(mock_sub, mock_register, mock_gts):
-    mc._db_cache.set({}); mc._client_cache.set({'conn': MagicMock()})
+    mc._databases.clear(); mc._clients.clear(); mc._clients['conn'] = MagicMock()
     provider = MongoDbContextProvider()
     mock_gts.return_value.get_db_connection = AsyncMock(return_value=('db', 'conn'))
     db = await provider.get_database('tid')
@@ -35,7 +35,8 @@ async def test_get_database_conn_already_cached(mock_sub, mock_register, mock_gt
 @patch(P + 'register')
 @patch(P + 'MongoEventSubscriber')
 def test_get_database_by_connection_cache_hit(mock_sub, mock_register, mock_gts):
-    mc._db_cache.set({'db': MagicMock()})
+    mc._databases.clear(); mc._clients.clear()
+    mc._databases[('conn', 'db')] = MagicMock()
     provider = MongoDbContextProvider()
     db = provider.get_database_by_connection('conn', 'db')
     assert db is not None
@@ -45,7 +46,7 @@ def test_get_database_by_connection_cache_hit(mock_sub, mock_register, mock_gts)
 @patch(P + 'register')
 @patch(P + 'MongoEventSubscriber')
 def test_get_database_by_connection_creates_client(mock_sub, mock_register, mock_gts):
-    mc._db_cache.set({}); mc._client_cache.set({})
+    mc._databases.clear(); mc._clients.clear()
     provider = MongoDbContextProvider()
     with patch(P + 'MongoClient') as mock_client:
         mock_client.return_value.__getitem__.return_value = MagicMock()
@@ -78,7 +79,7 @@ def test_event_subscriber_succeeded_failed_without_activity():
 @patch(P + 'register')
 @patch(P + 'MongoEventSubscriber')
 async def test_get_database_creates_client(mock_sub, mock_register, mock_gts):
-    mc._db_cache.set({}); mc._client_cache.set({})
+    mc._databases.clear(); mc._clients.clear()
     provider = MongoDbContextProvider()
     mock_gts.return_value.get_db_connection = AsyncMock(return_value=('db', 'conn'))
     with patch(P + 'MongoClient') as mock_client:
@@ -91,7 +92,7 @@ async def test_get_database_creates_client(mock_sub, mock_register, mock_gts):
 @patch(P + 'register')
 @patch(P + 'MongoEventSubscriber')
 def test_get_database_by_connection_client_cached(mock_sub, mock_register, mock_gts):
-    mc._db_cache.set({}); mc._client_cache.set({'conn': MagicMock()})
+    mc._databases.clear(); mc._clients.clear(); mc._clients['conn'] = MagicMock()
     provider = MongoDbContextProvider()
     db = provider.get_database_by_connection('conn', 'db')
     assert db is not None

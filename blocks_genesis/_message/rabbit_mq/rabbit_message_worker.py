@@ -10,10 +10,21 @@ from opentelemetry.trace import SpanKind, StatusCode
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 from blocks_genesis._auth.blocks_context import BlocksContextManager
+from blocks_genesis._delegation.constants import DELEGATION_GRANT_HEADER
+from blocks_genesis._delegation.context import DelegatedTokenContext
+from blocks_genesis._delegation.grant_binding import check_grant_binding
+from blocks_genesis._delegation.grant_store import get_delegation_grant_store
+from blocks_genesis._delegation.token_provider import get_delegated_token_provider
+from blocks_genesis._lmt.redaction import safe_baggage_items
 from blocks_genesis._message.consumer import Consumer
 from blocks_genesis._message.event_message import EventMessage
 from blocks_genesis._message.message_configuration import ConsumerSubscription, MessageConfiguration
 from blocks_genesis._message.rabbit_mq.rabbit_mq_service import RabbitMqService
+from blocks_genesis._message.security_context_header import (
+    SECURITY_CONTEXT_INVALID,
+    parse_security_context_header,
+)
+from blocks_genesis._message.tenant_check import check_message_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -120,53 +131,100 @@ class RabbitMessageWorker:
         self, message: AbstractIncomingMessage, subscription: ConsumerSubscription
     ) -> None:
         """Handles a single incoming message: context → tracing → dispatch → always ACK."""
-        tenant_id, security_context_raw, baggage_str, context = self._restore_message_context(message)
-
-        with self._tracer.start_as_current_span(
-            "process.messaging.rabbitmq",
-            context=context,
-            kind=SpanKind.CONSUMER,
-        ) as span:
-            span.set_attribute("messaging.system", "rabbitmq")
-            span.set_attribute("messaging.destination.name", subscription.queue_name)
-            span.set_attribute("SecurityContext", security_context_raw)
-            span.set_attribute("baggage.TenantId", tenant_id)
-            span.set_attribute("usage", True)
-
-            try:
-                baggages = json.loads(baggage_str)
-                for key, value in baggages.items():
-                    span.set_attribute(f"baggage.{key}", str(value))
-            except (json.JSONDecodeError, TypeError):
-                logger.warning("Invalid baggage JSON in message headers.")
-
-            body_bytes = message.body
-            body_str = body_bytes.decode("utf-8") if isinstance(body_bytes, (bytes, bytearray)) else str(body_bytes)
-            span.set_attribute("message.body", body_str)
-            logger.info(
-                "Received RabbitMQ message on queue '%s'. Body: %s",
-                subscription.queue_name,
-                body_str,
+        delegation_grant = None
+        grant_verified = False
+        try:
+            tenant_id, security_context_raw, baggage_str, context, delegation_grant, security_context_valid = (
+                self._restore_message_context(message)
             )
 
+            with self._tracer.start_as_current_span(
+                "process.messaging.rabbitmq",
+                context=context,
+                kind=SpanKind.CONSUMER,
+            ) as span:
+                span.set_attribute("messaging.system", "rabbitmq")
+                span.set_attribute("messaging.destination.name", subscription.queue_name)
+                span.set_attribute("message.id", message.message_id or "")
+                span.set_attribute("baggage.TenantId", tenant_id)
+                span.set_attribute("usage", True)
+
+                try:
+                    try:
+                        baggages = json.loads(baggage_str)
+                        if isinstance(baggages, dict):
+                            for key, value in safe_baggage_items(baggages).items():
+                                span.set_attribute(f"baggage.{key}", value)
+                        else:
+                            logger.warning("Baggage header is not a JSON object; ignored.")
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning("Invalid baggage JSON in message headers.")
+
+                    body_bytes = message.body
+                    body_str = body_bytes.decode("utf-8") if isinstance(body_bytes, (bytes, bytearray)) else str(body_bytes)
+                    span.set_attribute("message.size", len(body_bytes))
+                    logger.info(
+                        "Received RabbitMQ message %s on queue '%s' (%d bytes).",
+                        message.message_id,
+                        subscription.queue_name,
+                        len(body_bytes),
+                    )
+
+                    if not security_context_valid:
+                        # Acked like any other message. Neither the header nor the parse error is
+                        # logged: either can carry personal data.
+                        logger.error("Message %s not handled: %s", message.message_id, SECURITY_CONTEXT_INVALID)
+                        span.set_status(StatusCode.ERROR, SECURITY_CONTEXT_INVALID)
+                        return
+
+                    tenant_refusal = await check_message_tenant(BlocksContextManager.get_context(), message.message_id)
+                    if tenant_refusal:
+                        # Acked like any other message, without a release: the grant's TTL removes it.
+                        span.set_status(StatusCode.ERROR, tenant_refusal)
+                        return
+
+                    refusal = await check_grant_binding(
+                        BlocksContextManager.get_context(),
+                        delegation_grant,
+                        get_delegation_grant_store(),
+                        message.message_id,
+                    )
+                    if refusal:
+                        # Acked like any other message, without a release: the grant's TTL removes it.
+                        span.set_status(StatusCode.ERROR, refusal)
+                        return
+
+                    grant_verified = True
+                    event = EventMessage(**json.loads(body_str))
+                    span.set_attribute("message.type", event.type)
+                    await self._consumer.process_message(event.type, event.body)
+                    span.set_status(StatusCode.OK, "Message processed successfully")
+                    logger.info("Message processed successfully.")
+                except Exception as ex:
+                    logger.exception("Error processing RabbitMQ message.")
+                    span.set_status(StatusCode.ERROR, str(ex))
+                    span.set_attribute("error", str(ex))
+        except Exception:
+            logger.exception("Could not read RabbitMQ message.")
+        finally:
             try:
-                event = EventMessage(**json.loads(body_str))
-                await self._consumer.process_message(event.type, event.body)
-                span.set_status(StatusCode.OK, "Message processed successfully")
-                logger.info("Message processed successfully.")
-            except Exception as ex:
-                logger.exception("Error processing RabbitMQ message.")
-                span.set_status(StatusCode.ERROR, str(ex))
-                span.set_attribute("error", str(ex))
-            finally:
                 # Always ACK — mirrors .NET: BasicAckAsync in finally block
                 await message.ack()
+
+                # Order is fixed: business op -> ACK -> DEL. The ACK is final, so once the grant
+                # check has passed the grant is released whether the handler succeeded or failed.
+                # A refused or unchecked message keeps its grant until the TTL.
+                if grant_verified:
+                    await self._release_delegation_grant(delegation_grant)
+            finally:
                 BlocksContextManager.clear_context()
+                DelegatedTokenContext.clear()
 
     def _restore_message_context(self, message: AbstractIncomingMessage):
         """Decode tracing/security headers and restore the security + trace context.
 
-        Returns (tenant_id, security_context_raw, baggage_str, trace_context).
+        Returns (tenant_id, security_context_raw, baggage_str, trace_context, delegation_grant,
+        security_context_valid). An invalid SecurityContext is not restored.
         """
         headers = message.headers or {}
 
@@ -180,14 +238,12 @@ class RabbitMessageWorker:
         tenant_id = _decode(headers.get("TenantId", ""))
         security_context_raw = _decode(headers.get("SecurityContext", ""))
         baggage_str = _decode(headers.get("Baggage", "{}"))
+        delegation_grant = _decode(headers.get(DELEGATION_GRANT_HEADER, "")) or None
 
         # Restore security context (mirrors .NET: BlocksContext.SetContext)
-        if security_context_raw:
-            try:
-                sc = json.loads(security_context_raw)
-                BlocksContextManager.set_context(BlocksContextManager.create(**sc))
-            except Exception:
-                logger.warning("Could not parse SecurityContext header.", exc_info=True)
+        security_context_valid, security_context = parse_security_context_header(security_context_raw)
+        if security_context_valid:
+            BlocksContextManager.set_context(security_context)
 
         # Restore trace context
         context = None
@@ -199,7 +255,26 @@ class RabbitMessageWorker:
             except Exception:
                 logger.warning("Could not extract trace context from headers.", exc_info=True)
 
-        return tenant_id, security_context_raw, baggage_str, context
+        # Deliberately not a span attribute and not in baggage: the grant id is a credential.
+        DelegatedTokenContext.set(delegation_grant)
+
+        return tenant_id, security_context_raw, baggage_str, context, delegation_grant, security_context_valid
+
+    async def _release_delegation_grant(self, delegation_grant: Optional[str]) -> None:
+        """Remove the grant and its cached token after the settle.
+
+        Best effort: a failure is logged and never raised, so it cannot cause a second settle. The
+        absolute TTL still bounds the grant.
+        """
+        if not delegation_grant:
+            return
+
+        try:
+            get_delegated_token_provider().invalidate(delegation_grant)
+            await get_delegation_grant_store().delete_async(delegation_grant)
+        except Exception as ex:
+            # Not the grant id: it is a credential.
+            logger.warning("Could not release the delegation grant (%s); its TTL removes it.", type(ex).__name__)
 
     async def stop(self) -> None:
         """Signals the worker to stop and closes the RabbitMQ connection."""

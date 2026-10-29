@@ -4,12 +4,16 @@ import logging
 import threading
 from dataclasses import asdict, is_dataclass
 from datetime import timedelta
-from typing import Optional
+from typing import Optional, Set
 
 import aio_pika
 from pydantic import BaseModel
 
 from blocks_genesis._auth.blocks_context import BlocksContextManager
+from blocks_genesis._delegation.constants import DELEGATION_GRANT_HEADER
+from blocks_genesis._delegation.grant_factory import get_delegation_grant_factory
+from blocks_genesis._delegation.grant_store import get_delegation_grant_store
+from blocks_genesis._delegation.signature import is_well_formed
 from blocks_genesis._lmt.activity import Activity
 from blocks_genesis._message.consumer_message import ConsumerMessage
 from blocks_genesis._message.event_message import EventMessage
@@ -18,6 +22,10 @@ from blocks_genesis._message.message_configuration import MessageConfiguration
 from blocks_genesis._message.rabbit_mq.rabbit_mq_service import RabbitMqService
 
 logger = logging.getLogger(__name__)
+
+# Grant deletes started from the synchronous return callback. The event loop keeps only weak
+# references to tasks, so they are held here until they finish.
+_pending_grant_deletes: Set["asyncio.Task[None]"] = set()
 
 
 class RabbitMessageClient(MessageClient):
@@ -71,13 +79,31 @@ class RabbitMessageClient(MessageClient):
             self._initialized = True
 
     def _on_message_returned(self, *args) -> None:
-        message = args[-1]  # CallbackCollection passes (collection, message)
+        message = args[-1]  # CallbackCollection passes (channel, message)
+        # An unroutable message was never queued, so nothing will redeem or delete its grant.
+        # The callback is synchronous: the delete runs as a task, held until it finishes.
+        delegation_grant = (message.headers or {}).get(DELEGATION_GRANT_HEADER)
+        if isinstance(delegation_grant, bytes):
+            delegation_grant = delegation_grant.decode("utf-8", errors="replace")
+        if isinstance(delegation_grant, str) and is_well_formed(delegation_grant):
+            task = asyncio.get_running_loop().create_task(self._delete_undelivered_grant(delegation_grant))
+            _pending_grant_deletes.add(task)
+            task.add_done_callback(_pending_grant_deletes.discard)
+
         logger.warning(
-            "Message returned: exchange=%s, routing_key=%s, body=%s",
+            "Message returned: exchange=%s, routing_key=%s, size=%d",
             message.exchange,
             message.routing_key,
-            message.body.decode("utf-8") if message.body else "",
+            len(message.body or b""),
         )
+
+    @staticmethod
+    async def _delete_undelivered_grant(delegation_grant: str) -> None:
+        """Best effort: a failed delete is left to the grant's absolute TTL."""
+        try:
+            await get_delegation_grant_store().delete_async(delegation_grant)
+        except Exception as ex:  # noqa: BLE001 - the absolute TTL still bounds the grant
+            logger.warning("Could not delete the grant of an undelivered message: %s", type(ex).__name__)
 
     def _serialize_payload(self, payload) -> dict:
         if isinstance(payload, BaseModel):
@@ -118,10 +144,19 @@ class RabbitMessageClient(MessageClient):
                 "TraceId": Activity.get_trace_id(),
                 "SpanId": Activity.get_span_id(),
                 "SecurityContext": consumer_message.context or json.dumps(
-                    security_context.model_dump(mode="json") if security_context else {}
+                    BlocksContextManager.create_sanitized_for_transport(security_context)
                 ),
                 "Baggage": json.dumps(activity.get_all_root_attributes()),
             }
+
+            # Written while a validated user token is still in scope. SecurityContext above is
+            # context and tracing only; this grant is what carries authority. No user, no grant,
+            # no header.
+            delegation_grant = await get_delegation_grant_factory().create_for_send_async(
+                consumer_message.delegation_ttl_seconds
+            )
+            if delegation_grant:
+                headers[DELEGATION_GRANT_HEADER] = delegation_grant
 
             properties: dict = {
                 "delivery_mode": aio_pika.DeliveryMode.PERSISTENT,
@@ -166,6 +201,8 @@ class RabbitMessageClient(MessageClient):
                     consumer_message.consumer_name,
                     str(ex),
                 )
+                if delegation_grant:
+                    await self._delete_undelivered_grant(delegation_grant)
                 raise
 
     # ------------------------------------------------------------------

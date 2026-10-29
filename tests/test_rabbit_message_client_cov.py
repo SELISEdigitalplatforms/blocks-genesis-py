@@ -47,6 +47,9 @@ def _send_patches(stack, security_context=None):
     MAct.get_span_id.return_value = 'sp'
     MBCM = stack.enter_context(patch(RMC + 'BlocksContextManager'))
     MBCM.get_context.return_value = security_context
+    # These tests cover send mechanics. The payload's shape is covered by
+    # tests/test_context_transport.py, against the real builder.
+    MBCM.create_sanitized_for_transport.return_value = {'TenantId': 't'}
     stack.enter_context(patch(RMC + 'aio_pika'))
     return act
 
