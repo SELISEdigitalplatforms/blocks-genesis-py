@@ -18,6 +18,11 @@ TENANT_REVALIDATION_INTERVAL_SECONDS = 60
 UNKNOWN_TENANT_TTL_SECONDS = 30
 UNKNOWN_TENANT_CACHE_MAX_ENTRIES = 4096
 
+# Disabled records are left out in the query, as blocks-genesis-net does (Tenants.cs
+# ReadTenantFromDb, GetTenantByApplicationDomain): a disabled duplicate of an enabled
+# tenant must never be the record a lookup returns.
+_ENABLED = {"IsDisabled": {"$ne": True}}
+
 
 def _unknown_key(value: str) -> bytes:
     # A tenant key or host comes from the request, so only a fixed-size digest is kept.
@@ -180,11 +185,13 @@ class TenantService:
             tenant_dict = await collection.find_one({
                 "Applications": {
                     "$elemMatch": {"Domain": {"$in": domains}, "IsDomainVerified": True}
-                }
+                },
+                **_ENABLED,
             }) or await collection.find_one({
                 "Applications": {
                     "$elemMatch": {"Domain": {"$in": domains}}
-                }
+                },
+                **_ENABLED,
             })
             if tenant_dict:
                 tenant = Tenant(**tenant_dict)
@@ -260,12 +267,13 @@ class TenantService:
         }
 
     async def _find_tenant(self, tenant_id: str) -> Optional[Tenant]:
-        """The tenant's record in the root database, or None. Raises if the read fails."""
+        """The tenant's enabled record in the root database, or None. Raises if the read fails."""
         tenant_dict = await self.database[self._collection_name].find_one({
             "$or": [
                 {"_id": tenant_id},
                 {"TenantId": tenant_id}
-            ]
+            ],
+            **_ENABLED,
         })
         return Tenant(**tenant_dict) if tenant_dict else None
 

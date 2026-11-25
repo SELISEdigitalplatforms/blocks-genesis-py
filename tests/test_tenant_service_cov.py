@@ -181,7 +181,7 @@ async def test_apply_update_message_all_paths():
     find_one.return_value = {'_id': 't3', 'TenantId': 't3', 'DbConnectionString': 'db-conn'}
     await s._apply_update_message(TenantCacheUpdateMessage(action='upsert', tenant=_t('t3')))
     assert s._tenant_cache['t3'].db_connection_string == 'db-conn'
-    find_one.assert_awaited_with({'$or': [{'_id': 't3'}, {'TenantId': 't3'}]})
+    find_one.assert_awaited_with({'$or': [{'_id': 't3'}, {'TenantId': 't3'}], 'IsDisabled': {'$ne': True}})
 
 
 @pytest.mark.asyncio
@@ -299,3 +299,4 @@ async def test_get_tenant_by_domain_queries_verified_first():
     assert first['IsDomainVerified'] is True
     assert 'IsDomainVerified' not in second
     assert first['Domain'] == second['Domain'] == {'$in': ['http://x.com', 'https://x.com']}
+    assert all(c.args[0]['IsDisabled'] == {'$ne': True} for c in find_one.await_args_list)

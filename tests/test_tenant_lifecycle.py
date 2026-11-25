@@ -19,7 +19,7 @@ from blocks_genesis._tenant.tenant import Tenant
 from blocks_genesis._tenant.tenant_service import TenantCacheUpdateMessage, TenantService
 
 TENANT_LOGGER = "blocks_genesis._tenant.tenant_service"
-ID_QUERY = {"$or": [{"_id": "t1"}, {"TenantId": "t1"}]}
+ID_QUERY = {"$or": [{"_id": "t1"}, {"TenantId": "t1"}], "IsDisabled": {"$ne": True}}
 X_COM = [{"Domain": "https://x.com"}]
 
 
