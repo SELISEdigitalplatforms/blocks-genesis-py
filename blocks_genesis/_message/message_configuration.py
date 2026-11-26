@@ -1,6 +1,5 @@
 from typing import List, Optional
 from datetime import timedelta
-from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
@@ -108,11 +107,10 @@ class MessageConfiguration(BaseModel):
 
 
 def _get_provider(connection_string: str) -> str:
-    """Detects the messaging provider from the connection string scheme."""
-    try:
-        parsed = urlparse(connection_string)
-        if parsed.scheme.lower() in ("amqp", "amqps"):
-            return "rabbitmq"
-    except Exception:
-        pass
+    """Detects the messaging provider from the connection string prefix (amqp:// or amqps://, any case)."""
+    if not isinstance(connection_string, str):
+        return "azure"
+    lowered = connection_string.lower()
+    if lowered.startswith(("amqp://", "amqps://")):
+        return "rabbitmq"
     return "azure"
