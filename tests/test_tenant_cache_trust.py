@@ -106,7 +106,7 @@ async def test_forged_upsert_fields_do_not_reach_cache(overrides, read):
 
     assert read(s._tenant_cache["t1"]) == real
     assert await s.get_db_connection("t1") == ("db", "mongodb://real")
-    find_one.assert_awaited_with({"$or": [{"_id": "t1"}, {"TenantId": "t1"}]})
+    find_one.assert_awaited_with({"$or": [{"_id": "t1"}, {"TenantId": "t1"}], "IsDisabled": {"$ne": True}})
     assert s.get_root_tenant_id() is None
 
 
